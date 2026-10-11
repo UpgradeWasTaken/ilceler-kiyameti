@@ -3,14 +3,18 @@
 // same-interface demo used while no Firebase project is configured.
 //
 // Handlers: district(key, node), province(key, node), log(key, entry, isLive),
-//           status(kind, detail), cooldown(untilServerMs)
+//           status(kind, detail), cooldown(untilServerMs), caps()
 
 import { FIREBASE_CONFIG } from './config.js';
 import { COOLDOWN_MS } from './state.js';
 
 const LOG_LIMIT = 60;
 
-const useFirebase = () => !!(new URLSearchParams(location.search).get('emulator') || FIREBASE_CONFIG.apiKey);
+// ?demo forces the local demo mode (handy for trying changes without touching the live game).
+const useFirebase = () => {
+  const q = new URLSearchParams(location.search);
+  return !q.has('demo') && !!(q.get('emulator') || FIREBASE_CONFIG.apiKey);
+};
 
 // Starts downloading the Firebase SDK while the map data is still loading.
 export function preloadBackend() {
@@ -69,9 +73,21 @@ class FirebaseBackend {
     this.mode = emu ? 'emulator' : 'firebase';
     this.offset = 0;
     this.uid = null;
+    this.canRevive = false;
+    this.capsChecked = 0;
   }
 
   now() { return Date.now() + this.offset; }
+
+  // Database rules that allow raising districts from the sea also make /caps readable;
+  // older rules deny that read, so the site keeps the feature hidden until they are published.
+  async checkCaps() {
+    if (this.canRevive || Date.now() - this.capsChecked < 20000) return this.canRevive;
+    this.capsChecked = Date.now();
+    this.canRevive = await this.fb.get(this.fb.ref(this.db, 'caps')).then(() => true, () => false);
+    if (this.canRevive) this.h.caps?.();
+    return this.canRevive;
+  }
 
   async start() {
     const fb = (this.fb = await import('../vendor/firebase.js'));
@@ -104,6 +120,7 @@ class FirebaseBackend {
       const e = s.val();
       if (e && typeof e === 'object') this.h.log(s.key, e, typeof e.t === 'number' && e.t > this.now() - 8000);
     });
+    this.checkCaps();
 
     if (!this.uid) {
       try {
@@ -168,6 +185,7 @@ class LocalBackend {
     this.geo = geo;
     this.h = h;
     this.mode = 'local';
+    this.canRevive = true;
     this.key = 'ik-demo-v1';
     this.uid = storageGet('ik-demo-uid');
     if (!this.uid) storageSet('ik-demo-uid', (this.uid = `demo${randomId(8)}`));
@@ -206,6 +224,8 @@ class LocalBackend {
   }
 
   newProvinceKey() { return `-L${randomId(18)}`; }
+
+  async checkCaps() { return true; }
 
   async submit(op, nick) {
     const t = Date.now();

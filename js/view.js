@@ -37,6 +37,8 @@ export class MapView {
     this.hitCtx = document.createElement('canvas').getContext('2d');
     this.hover = -1;
     this.selected = -1;
+    this.sunkHover = -1;  // a sunk district under the mouse
+    this.sunkSel = null;  // { key, members } of a selected sunk district
     this.pickHover = -1;
     this.picking = false;
     this.flashes = [];
@@ -228,7 +230,8 @@ export class MapView {
       const p = pos(e);
       pts.delete(e.pointerId);
       if (g && g.type === 'pan' && !g.moved && e.type === 'pointerup' && performance.now() - g.t < 700) {
-        this.onClick?.(this.pickAt(p.x, p.y), e);
+        const i = this.pickAt(p.x, p.y);
+        this.onClick?.(i, e, i < 0 ? this.pickSunk(p.x, p.y) : -1);
       }
       if (pts.size === 1) {
         const [q] = [...pts.values()];
@@ -259,11 +262,13 @@ export class MapView {
 
   hoverAt(x, y, e) {
     const i = x < 0 ? -1 : this.pickAt(x, y);
+    const sunk = i < 0 && x >= 0 && !this.picking ? this.pickSunk(x, y) : -1;
     if (this.picking) {
       if (i !== this.pickHover) { this.pickHover = i; this.requestRender(); }
     } else if (i !== this.hover) { this.hover = i; this.requestRender(); }
-    this.canvas.style.cursor = i >= 0 ? 'pointer' : '';
-    this.onHover?.(i, e);
+    if (sunk !== this.sunkHover) { this.sunkHover = sunk; this.requestRender(); }
+    this.canvas.style.cursor = i >= 0 || sunk >= 0 ? 'pointer' : '';
+    this.onHover?.(i, e, sunk);
   }
 
   pickAt(px, py) {
@@ -274,6 +279,20 @@ export class MapView {
     for (let i = 0; i < this.geo.count; i++) {
       const b = i * 4;
       if (!alive[i] || wx < box[b] || wx > box[b + 2] || wy < box[b + 1] || wy > box[b + 3]) continue;
+      if (this.hitCtx.isPointInPath(this.geo.districtPath(i, L), wx, wy)) return i;
+    }
+    return -1;
+  }
+
+  // The sunk (sea) district under a screen point, or -1.
+  pickSunk(px, py) {
+    const { x, y, s } = this.cam;
+    const wx = (px - x) / s, wy = (py - y) / s;
+    const { box } = this.geo, alive = this.state.alive;
+    const L = this.geo.levelFor(s);
+    for (let i = 0; i < this.geo.count; i++) {
+      const b = i * 4;
+      if (alive[i] || wx < box[b] || wx > box[b + 2] || wy < box[b + 1] || wy > box[b + 3]) continue;
       if (this.hitCtx.isPointInPath(this.geo.districtPath(i, L), wx, wy)) return i;
     }
     return -1;
@@ -499,6 +518,21 @@ export class MapView {
       else outline(hov, 'rgba(255,255,255,0.28)', '#1b1b1b', null, 1.3, 0);
     }
     if (sel >= 0) outline(sel, 'rgba(255,255,255,0.32)', '#111', 'rgba(255,255,255,0.95)', 2.2, 5);
+
+    // sunk districts: a dashed ghost of where they used to be
+    const ghost = (members, key, fill, w) => {
+      if (fill) { ctx.fillStyle = fill; ctx.fill(this.groupFill(members, key, L)); }
+      ctx.setLineDash([5 * px, 4 * px]);
+      ctx.strokeStyle = '#0b5fd6';
+      ctx.lineWidth = w * px;
+      ctx.stroke(this.groupOutline(members, key, L));
+      ctx.setLineDash([]);
+    };
+    const ss = this.sunkSel;
+    if (this.sunkHover >= 0 && !(ss && ss.members.includes(this.sunkHover))) {
+      ghost([this.sunkHover], `sh${this.sunkHover}`, 'rgba(255,255,255,0.25)', 1.4);
+    }
+    if (ss && ss.members.length) ghost(ss.members, `ss${ss.key}`, 'rgba(255,255,255,0.45)', 2.2);
 
     if (this.flashes.length) {
       this.flashes = this.flashes.filter((f) => now - f.t0 < f.dur);

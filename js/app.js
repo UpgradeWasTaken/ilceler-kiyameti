@@ -29,6 +29,7 @@ setTimeout(() => $('loading').remove(), 400);
 
 let backend = null;
 let selected = -1; // any district of the selected group
+let sunkSel = -1;  // a selected district that is under the sea
 let ownChangeUntil = 0; // our own action may remove the selection: no "it's gone" toast then
 let pick = null;   // { text, onPick(i) } while choosing a target on the map
 
@@ -47,6 +48,10 @@ function flush() {
     select(-1);
   } else if (selected >= 0 && state.root[selected] !== rootBefore) {
     closeForm(); // someone merged the selected group away: an open form would target a stale group
+  }
+  if (sunkSel >= 0) {
+    if (state.alive[sunkSel]) select(sunkSel, { pan: false }); // it rose from the sea
+    else view.sunkSel = { key: sunkSel, members: state.subtreeOf(sunkSel) };
   }
   view.requestRender();
   renderStats();
@@ -99,6 +104,8 @@ const groupOf = (i) => (i >= 0 && state.alive[i] ? state.root[i] : -1);
 function select(i, { fly = false, pan = true } = {}) {
   selected = groupOf(i);
   view.selected = selected;
+  sunkSel = -1;
+  view.sunkSel = null;
   closeForm();
   renderSelection();
   view.requestRender();
@@ -110,10 +117,50 @@ function select(i, { fly = false, pan = true } = {}) {
   }
 }
 
+function selectSunk(i, { fly = false, pan = true } = {}) {
+  select(-1);
+  if (i < 0 || state.alive[i]) return;
+  sunkSel = i;
+  const members = state.subtreeOf(i);
+  view.sunkSel = { key: i, members };
+  renderSelection();
+  view.requestRender();
+  backend?.checkCaps().then(() => renderSelection());
+  const box = state.boxOf(members);
+  showTab('sel', true);
+  if (fly) view.flyToBox(box);
+  else if (pan && isMobile()) setTimeout(() => { updateInsets(); view.ensureVisible(box); }, 60);
+}
+
+function renderSunk(i) {
+  const members = state.subtreeOf(i);
+  const r = state.root[i];
+  const wasIn = state.provName(r >= 0 ? state.prov[r] : state.prov[i]);
+  $('sunk-name').textContent = state.name[i];
+  $('sunk-sub').textContent = `🌊 Denizde · ${wasIn} ilindeydi`;
+  const pk = state.reviveProvince(i);
+  const others = members.length > 1 ? ` Ona katılmış ${members.length - 1} ilçe de onunla geri gelir.` : '';
+  $('sunk-info').textContent = pk
+    ? `Denizden çıkarsan ${state.provName(pk)} iline geri döner.${others}`
+    : `Eski ili de denizde: çıkarırken yeni bir il seçeceksin.${others}`;
+  const sp = state.sunkProvinceOf(i);
+  $('sunk-prov').hidden = !sp;
+  if (sp) {
+    $('sunk-prov-name').textContent = `${state.provName(sp)} ili de denizde`;
+    $('sunk-prov-count').textContent = `${state.provinceReviveCount(sp)} ilçe`;
+  }
+  const can = !!backend?.canRevive;
+  $('sunk-off').hidden = can || !backend;
+  for (const btn of document.querySelectorAll('[data-act="revive"], [data-act="previve"]')) btn.parentElement.hidden = !can && !!backend;
+}
+
 function renderSelection() {
   const r = groupOf(selected);
-  $('sel-empty').hidden = r >= 0;
+  const sunk = r < 0 && sunkSel >= 0 && !state.alive[sunkSel];
+  $('sel-empty').hidden = r >= 0 || sunk;
   $('sel').hidden = r < 0;
+  $('sunk').hidden = !sunk;
+  if (sunk) { renderSunk(sunkSel); renderCooldown(); }
   if (r < 0) return;
   const members = state.groups.get(r);
   const pk = state.prov[r];
@@ -129,21 +176,24 @@ function renderSelection() {
 }
 
 $('sel-close').onclick = () => select(-1);
+$('sunk-close').onclick = () => select(-1);
 
-view.onClick = (i) => {
+view.onClick = (i, e, sunk) => {
   if (pick) {
     if (i >= 0) pick.onPick(i);
     return;
   }
-  select(i);
+  if (i < 0 && sunk >= 0) selectSunk(sunk);
+  else select(i);
 };
 
 const tip = $('tip');
-view.onHover = (i, e) => {
+view.onHover = (i, e, sunk = -1) => {
   const r = groupOf(i);
-  if (r < 0 || !e) { tip.hidden = true; return; }
+  if ((r < 0 && sunk < 0) || !e) { tip.hidden = true; return; }
   tip.hidden = false;
-  tip.replaceChildren(pick ? '→ ' : '', state.name[r], el('small', { textContent: state.provName(state.prov[r]) }));
+  if (r < 0) tip.replaceChildren('🌊 ', state.name[sunk], el('small', { textContent: 'denizde' }));
+  else tip.replaceChildren(pick ? '→ ' : '', state.name[r], el('small', { textContent: state.provName(state.prov[r]) }));
   const rect = $('stage').getBoundingClientRect();
   tip.style.left = `${e.clientX - rect.left}px`;
   tip.style.top = `${e.clientY - rect.top}px`;
@@ -187,22 +237,71 @@ function setPick(p) {
 }
 $('pick-cancel').onclick = closeForm;
 
+const SUNK_ACTIONS = new Set(['revive', 'previve']);
 for (const btn of document.querySelectorAll('[data-act]')) {
   btn.addEventListener('click', () => {
-    const r = groupOf(selected);
-    if (r < 0) return;
+    const target = SUNK_ACTIONS.has(btn.dataset.act) ? (sunkSel >= 0 && !state.alive[sunkSel] ? sunkSel : -1) : groupOf(selected);
+    if (target < 0) return;
     if (btn.classList.contains('on')) { closeForm(); return; }
-    ACTIONS[btn.dataset.act](r);
+    ACTIONS[btn.dataset.act](target);
   });
 }
 
+const withoutNulls = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null));
+
 function districtOp(r, fields, log, extra = {}) {
-  return { kind: 'd', id: districtKey(r), fields, full: { ...state.districtNode(r), ...fields }, log, ...extra };
+  return { kind: 'd', id: districtKey(r), fields, full: withoutNulls({ ...state.districtNode(r), ...fields }), log, ...extra };
 }
 function provinceOp(pk, fields, log) {
   const p = state.provinces.get(pk);
-  const full = { n: p.n, c: p.c, ...(p.x ? { x: true } : {}), ...fields };
+  const full = withoutNulls({ n: p.n, c: p.c, ...(p.x ? { x: true } : {}), ...fields });
   return { kind: 'p', id: pk, fields, full, log };
+}
+
+// Raising a sunk district: it becomes its own district again (no merge, not sunk) in a living province.
+function reviveOp(i, pk, newProvince) {
+  const fields = { x: null, m: null, p: pk };
+  return districtOp(i, fields, { a: 'rev', s: state.name[i], o: newProvince ? newProvince.n : state.provName(pk) }, newProvince ? { newProvince } : {});
+}
+
+// Province chooser shared by "change province" and "raise from the sea".
+function provincePicker({ act, label, exclude, colorFor, onChoose, onCreate, mapText }) {
+  const input = el('input', { type: 'text', placeholder: 'İl ara ya da yeni il adı yaz…', maxLength: 30 });
+  const list = el('ul', { className: 'results', role: 'listbox' });
+  const fromMap = el('button', { type: 'button', textContent: '🗺️ Haritadan seç' });
+  const create = (name) => {
+    if (!backend) return toast('Henüz bağlanılamadı', 'warn');
+    onCreate({ key: backend.newProvinceKey(), n: name, c: colorFor() });
+  };
+  const refresh = () => {
+    const q = fold(cleanName(input.value));
+    const items = [];
+    let exact = false;
+    for (const pk of [...state.provGroups.keys()].sort((a, c) => state.provName(a).localeCompare(state.provName(c), 'tr'))) {
+      if (pk === exclude) continue;
+      const name = state.provName(pk);
+      if (q && !fold(name).includes(q)) continue;
+      if (fold(name) === q) exact = true;
+      if (items.length < 60) {
+        const li = el('li', {}, el('span', { className: 'swatch sm', style: `background:${PALETTE[state.provColor(pk)]}` }), name,
+          el('small', { textContent: `${state.provGroups.get(pk).length} ilçe` }));
+        li.onclick = () => onChoose(pk);
+        items.push(li);
+      }
+    }
+    const name = cleanName(input.value);
+    if (name && !exact) {
+      const li = el('li', { className: 'create', textContent: `➕ “${name}” adında yeni il kur` });
+      li.onclick = () => create(name);
+      items.unshift(li);
+    }
+    list.replaceChildren(...items);
+  };
+  input.oninput = refresh;
+  fromMap.onclick = () => setPick({ text: mapText, onPick: (i) => onChoose(state.prov[state.root[i]]) });
+  openForm(act, el('label', { textContent: label }), input, list, el('div', { className: 'row' }, fromMap), formRow());
+  formSubmit = () => list.firstElementChild?.click();
+  refresh();
 }
 
 const ACTIONS = {
@@ -219,52 +318,18 @@ const ACTIONS = {
   },
 
   province(r) {
-    const input = el('input', { type: 'text', placeholder: 'İl ara ya da yeni il adı yaz…', maxLength: 30 });
-    const list = el('ul', { className: 'results', role: 'listbox' });
-    const fromMap = el('button', { type: 'button', textContent: '🗺️ Haritadan seç' });
-    const choose = (pk) => {
-      if (pk === state.prov[r]) return toast('Zaten bu ilde', 'warn');
-      run(districtOp(r, { p: pk }, { a: 'prv', s: state.name[r], o: state.provName(pk) }));
-    };
-    const create = (name) => {
-      if (!backend) return toast('Henüz bağlanılamadı', 'warn');
-      const key = backend.newProvinceKey();
-      const c = state.pickColor(r);
-      run(districtOp(r, { p: key }, { a: 'prv', s: state.name[r], o: name }, { newProvince: { key, n: name, c } }));
-    };
-    const refresh = () => {
-      const q = fold(cleanName(input.value));
-      const items = [];
-      let exact = false;
-      for (const pk of [...state.provGroups.keys()].sort((a, c) => state.provName(a).localeCompare(state.provName(c), 'tr'))) {
-        if (pk === state.prov[r]) continue;
-        const name = state.provName(pk);
-        if (q && !fold(name).includes(q)) continue;
-        if (fold(name) === q) exact = true;
-        if (items.length < 60) {
-          const li = el('li', {}, el('span', { className: 'swatch sm', style: `background:${PALETTE[state.provColor(pk)]}` }), name,
-            el('small', { textContent: `${state.provGroups.get(pk).length} ilçe` }));
-          li.onclick = () => choose(pk);
-          items.push(li);
-        }
-      }
-      const name = cleanName(input.value);
-      if (name && !exact) {
-        const li = el('li', { className: 'create', textContent: `➕ “${name}” adında yeni il kur` });
-        li.onclick = () => create(name);
-        items.unshift(li);
-      }
-      list.replaceChildren(...items);
-    };
-    input.oninput = refresh;
-    fromMap.onclick = () => setPick({
-      text: `${state.name[r]} hangi ile geçsin? Haritada o ilden bir ilçeye dokun.`,
-      onPick: (i) => choose(state.prov[state.root[i]]),
+    provincePicker({
+      act: 'province',
+      label: `${state.name[r]} hangi ile geçsin?`,
+      exclude: state.prov[r],
+      colorFor: () => state.pickColor(r),
+      mapText: `${state.name[r]} hangi ile geçsin? Haritada o ilden bir ilçeye dokun.`,
+      onChoose: (pk) => {
+        if (pk === state.prov[r]) return toast('Zaten bu ilde', 'warn');
+        run(districtOp(r, { p: pk }, { a: 'prv', s: state.name[r], o: state.provName(pk) }));
+      },
+      onCreate: (np) => run(districtOp(r, { p: np.key }, { a: 'prv', s: state.name[r], o: np.n }, { newProvince: np })),
     });
-    openForm('province', el('label', { textContent: `${state.name[r]} hangi ile geçsin?` }), input, list,
-      el('div', { className: 'row' }, fromMap), formRow());
-    formSubmit = () => list.firstElementChild?.click();
-    refresh();
   },
 
   merge(r) {
@@ -311,6 +376,36 @@ const ACTIONS = {
       if (name === state.provName(pk)) return closeForm();
       run(provinceOp(pk, { n: name }, { a: 'pren', s: state.provName(pk), o: name }));
     };
+  },
+
+  async revive(i) {
+    const members = state.subtreeOf(i);
+    const others = members.length > 1 ? ` Ona katılmış ${members.length - 1} ilçe de geri gelir.` : '';
+    const pk = state.reviveProvince(i);
+    if (pk) {
+      closeForm();
+      const ok = await confirmBox([b(state.name[i]), ' denizden çıkıp ', b(`${state.provName(pk)} iline`), ` geri dönsün mü? 🏝️${others}`], 'Denizden çıkar');
+      if (ok && !state.alive[i] && state.provinceAlive(pk)) run(reviveOp(i, pk));
+      return;
+    }
+    provincePicker({
+      act: 'revive',
+      label: `${state.name[i]} hangi ilde denizden çıksın?`,
+      exclude: null,
+      colorFor: () => state.pickColor(i),
+      mapText: `${state.name[i]} hangi ilde denizden çıksın? Haritada o ilden bir ilçeye dokun.`,
+      onChoose: (p) => run(reviveOp(i, p)),
+      onCreate: (np) => run(reviveOp(i, np.key, np)),
+    });
+  },
+
+  async previve(i) {
+    closeForm();
+    const pk = state.sunkProvinceOf(i);
+    if (!pk) return;
+    const n = state.provinceReviveCount(pk);
+    const ok = await confirmBox([b(`${state.provName(pk)} ili`), ` ve içindeki ${n} ilçe denizden çıksın mı? 🏝️`], 'İli denizden çıkar');
+    if (ok && state.provinces.get(pk)?.x) run(provinceOp(pk, { x: null }, { a: 'prev', s: state.provName(pk), o: `${n} ilçe` }));
   },
 
   async pdelete(r) {
@@ -387,7 +482,7 @@ const nick = () => cleanName(nickInput.value).slice(0, 20);
 
 // ---- live feed ------------------------------------------------------------------------
 
-const ICONS = { del: '🌊', mrg: '🔗', ren: '✏️', prv: '🏳️', pren: '✏️', pdel: '🌊' };
+const ICONS = { del: '🌊', mrg: '🔗', ren: '✏️', prv: '🏳️', pren: '✏️', pdel: '🌊', rev: '🏝️', prev: '🏝️' };
 function describe(e) {
   const s = e.s || '?', o = e.o || '?';
   switch (e.a) {
@@ -397,6 +492,8 @@ function describe(e) {
     case 'prv': return [b(s), ' ilçesi ', b(o), ' iline geçti'];
     case 'pren': return [b(s), ' ilinin adı artık ', b(o)];
     case 'pdel': return [b(s), ` ili (${o}) denize gömüldü`];
+    case 'rev': return [b(s), ' ilçesi denizden çıktı (', b(o), ' ili)'];
+    case 'prev': return [b(s), ` ili (${o}) denizden çıktı`];
     default: return ['Bilinmeyen değişiklik'];
   }
 }
@@ -426,7 +523,7 @@ const feed = {
     if (this.entries.length > 80) this.entries.length = 80;
     if (live) {
       if (backend && e.u !== backend.uid) setTimeout(() => flashEntry(entry, true), 60);
-      if (isMobile() && !$('panel-feed').classList.contains('on')) { this.unread++; }
+      if (isMobile() && !$('panel-feed').classList.contains('on') && e.u !== backend?.uid) this.unread++;
     }
     clearTimeout(this.timer);
     this.timer = setTimeout(() => this.render(), 30);
@@ -463,10 +560,14 @@ function flashEntry(e, passive) {
   }
   if (!members.length) return;
   const sunk = e.a === 'del' || e.a === 'pdel';
-  view.flash(members, sunk ? '#0b5fd6' : '#ff5a1f');
+  const raised = e.a === 'rev' || e.a === 'prev';
+  view.flash(members, sunk ? '#0b5fd6' : raised ? '#1b8a4b' : '#ff5a1f');
   if (!passive) {
     view.flyToBox(state.boxOf(members), 10);
-    if (!sunk && di >= 0 && state.alive[di]) select(di, { pan: false });
+    // select what the entry is about; if it is under water now, offer to raise it
+    const focus = di >= 0 && di < geo.count ? di : members.reduce((a, c) => (geo.area[c] > geo.area[a] ? c : a));
+    if (state.alive[focus]) select(focus, { pan: false });
+    else selectSunk(focus, { pan: false });
   }
 }
 
@@ -497,7 +598,14 @@ const searchBox = {
         const name = state.provName(pk);
         if (fold(name).startsWith(q)) this.items.push({ type: 'p', pk, name });
       }
-      this.items = this.items.slice(0, 3).concat(searchGroups(q, 8).map((g) => ({ type: 'd', ...g })));
+      // provinces, then names starting with the query (sunk ones too), then names containing it
+      const groups = searchGroups(q, 8).map((g) => ({ type: 'd', ...g }));
+      const starts = groups.filter((g) => fold(g.name).startsWith(q));
+      const sunk = [];
+      for (let i = 0; i < geo.count && sunk.length < 3 && !pick; i++) {
+        if (!state.alive[i] && fold(state.name[i]).startsWith(q)) sunk.push({ type: 's', i, name: state.name[i] });
+      }
+      this.items = this.items.slice(0, 3).concat(starts, sunk, groups.filter((g) => !starts.includes(g)));
     }
     this.active = this.items.length ? 0 : -1;
     this.render();
@@ -505,9 +613,10 @@ const searchBox = {
   render() {
     this.list.hidden = !this.items.length || document.activeElement !== this.input;
     this.list.replaceChildren(...this.items.map((it, k) => {
-      const color = PALETTE[it.type === 'p' ? state.provColor(it.pk) : state.color[it.r]];
-      const li = el('li', { role: 'option' }, el('span', { className: 'swatch sm', style: `background:${color}` }), it.name,
-        el('small', { textContent: it.type === 'p' ? 'il' : state.provName(state.prov[it.r]) }));
+      const swatch = it.type === 's' ? el('span', { className: 'swatch sm sea' })
+        : el('span', { className: 'swatch sm', style: `background:${PALETTE[it.type === 'p' ? state.provColor(it.pk) : state.color[it.r]]}` });
+      const li = el('li', { role: 'option' }, swatch, it.name,
+        el('small', { textContent: it.type === 'p' ? 'il' : it.type === 's' ? '🌊 denizde' : state.provName(state.prov[it.r]) }));
       li.setAttribute('aria-selected', String(k === this.active));
       li.onpointerdown = (e) => { e.preventDefault(); this.choose(it); };
       return li;
@@ -524,6 +633,8 @@ const searchBox = {
       const members = roots.flatMap((r) => state.groups.get(r));
       select(roots.reduce((a, c) => (state.groupArea.get(c) > state.groupArea.get(a) ? c : a)), { pan: false });
       view.flyToBox(state.boxOf(members), 8);
+    } else if (it.type === 's') {
+      selectSunk(it.i, { fly: true });
     } else if (pick) {
       pick.onPick(it.r);
     } else {
@@ -596,6 +707,7 @@ createBackend(geo, {
   log(key, e, live) { feed.add(key, e, live); },
   status: setStatus,
   cooldown(until) { cooldown.setUntil(until); },
+  caps() { renderSelection(); },
 }).then((be) => { backend = be; renderCooldown(); renderSelection(); feed.render(); }).catch((e) => {
   console.error(e);
   setStatus('error', 'Sunucuya bağlanılamadı');

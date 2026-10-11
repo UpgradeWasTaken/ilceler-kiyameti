@@ -61,7 +61,7 @@
       <section id="panel-sel" class="panel" data-panel="sel">
         <div id="sel-empty" class="empty">
           <p class="big">🗺️ Haritadan bir ilçe seç.</p>
-          <p>Seçtiğin ilçeyi <b>denize gömebilir</b>, başka bir ilçeye <b>katabilir</b>, <b>adını</b> ya da <b>ilini</b> değiştirebilirsin. Yaptığın her değişikliği herkes anında görür.</p>
+          <p>Seçtiğin ilçeyi <b>denize gömebilir</b>, başka bir ilçeye <b>katabilir</b>, <b>adını</b> ya da <b>ilini</b> değiştirebilirsin. Denize gömülmüş bir yere dokunup onu <b>denizden çıkarabilirsin</b>. Yaptığın her değişikliği herkes anında görür.</p>
           <p class="muted">Her hamleden sonra 10 saniye beklemen gerekir.</p>
         </div>
 
@@ -90,8 +90,31 @@
             </div>
           </div>
 
-          <form id="act-form" class="act-form" hidden></form>
         </div>
+
+        <div id="sunk" class="sel" hidden>
+          <div class="sel-head">
+            <span class="swatch sea"></span>
+            <div class="sel-titles">
+              <h2 id="sunk-name"></h2>
+              <p id="sunk-sub"></p>
+            </div>
+            <button id="sunk-close" class="icon" type="button" aria-label="Seçimi kapat">✕</button>
+          </div>
+          <p id="sunk-info" class="sunk-info"></p>
+          <div class="actions one" id="sunk-actions">
+            <button type="button" data-act="revive" class="revive">🏝️ Denizden çıkar</button>
+          </div>
+          <div class="prov-box" id="sunk-prov" hidden>
+            <h3><span class="swatch sm sea"></span><span id="sunk-prov-name"></span><small id="sunk-prov-count"></small></h3>
+            <div class="actions one">
+              <button type="button" data-act="previve" class="revive">🏝️ Tüm ili denizden çıkar</button>
+            </div>
+          </div>
+          <p id="sunk-off" class="muted" hidden>Denizden çıkarma bu sunucuda henüz açık değil.</p>
+        </div>
+
+        <form id="act-form" class="act-form" hidden></form>
 
         <div id="cool" class="cool" data-ready="1">
           <div class="cool-bar"><i id="cool-fill"></i></div>

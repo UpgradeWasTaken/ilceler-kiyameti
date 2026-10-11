@@ -149,6 +149,11 @@ button { cursor: pointer; }
 .actions button.danger, .act-form button.danger, .confirm .danger { color: #fff; background: var(--danger); border-color: var(--danger); }
 .actions button.danger:hover:not(:disabled) { background: #b01f1f; }
 .actions button:disabled { opacity: .45; cursor: not-allowed; }
+.actions.one { grid-template-columns: 1fr; }
+.actions button.revive, .act-form button.revive { color: #fff; background: #1b8a4b; border-color: #1b8a4b; }
+.actions button.revive:hover:not(:disabled) { background: #157a40; }
+.swatch.sea { background: var(--sea); border-style: dashed; border-color: #0b5fd6; }
+.sunk-info { margin: 10px 0 0; font-size: 13.5px; line-height: 1.45; }
 .actions button.on { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(10,99,206,.2); }
 
 .prov-box { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }

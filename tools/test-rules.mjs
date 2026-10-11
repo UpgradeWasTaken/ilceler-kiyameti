@@ -136,11 +136,37 @@ const strayKey = push(ref(u14.db, 'state/p')).key;
 await expectDenied('create a province without moving a district into it', action(u14, 'd', `d${inP6 + 2}`, { n: 'Q' }, 'ren', { [`state/p/${strayKey}`]: { n: 'Boş İl', c: 1 } }));
 await expectDenied('name too long', action(u14, 'd', `d${inP6 + 2}`, { n: 'x'.repeat(31) }, 'ren'));
 
+console.log('reviving sunk districts and provinces');
+const r = [];
+for (let k = 0; k < 12; k++) r.push(await fresh());
+const isAlive = async (i) => {
+  const d = await node(a.db, `state/d/d${i}`);
+  return !d.x && !d.m && !(await node(a.db, `state/p/${d.p}/x`));
+};
+await expectOk('revive sunk d10 into its province', action(r[0], 'd', 'd10', { x: null, p: `p${map.d.prov[10]}` }, 'rev'));
+if (!(await isAlive(10))) { failures++; console.log('  FAIL  d10 should be alive again'); }
+await expectOk('sink group d2 (d1 is merged into it)', action(r[1], 'd', 'd2', { x: true }, 'del'));
+await expectOk('revive merged member d1 on its own', action(r[2], 'd', 'd1', { m: null, p: `p${map.d.prov[1]}` }, 'rev'));
+await expectDenied('revive that also merges', action(r[3], 'd', 'd2', { x: null, m: 'd1' }, 'rev'));
+await expectDenied('revive that keeps x', action(r[3], 'd', 'd2', { p: `p${map.d.prov[2]}` }, 'rev'));
+await expectDenied('revive into a sunk province', action(r[3], 'd', `d${inP5}`, { p: 'p5' }, 'rev'));
+await expectDenied('revive that keeps the sunk province', action(r[3], 'd', `d${inP5}`, { n: 'Hayalet' }, 'rev'));
+await expectOk('revive district of a sunk province into p34', action(r[4], 'd', `d${inP5}`, { p: 'p34' }, 'rev'));
+const atlantis = push(ref(r[5].db, 'state/p')).key;
+await expectOk('revive into a brand-new province', action(r[5], 'd', 'd2', { x: null, p: atlantis }, 'rev', { [`state/p/${atlantis}`]: { n: 'Atlantis', c: 2 } }));
+await expectDenied('revive province while keeping x', action(r[6], 'p', 'p5', { n: 'Yarım' }, 'pren'));
+await expectOk('revive sunk province p5', action(r[7], 'p', 'p5', { x: null }, 'prev'));
+await expectOk('rename the revived province', action(r[8], 'p', 'p5', { n: 'Geri Dönen' }, 'pren'));
+await expectOk('normal action in the revived province', action(r[9], 'd', `d${inP5 + 1}`, { n: 'Yaşıyor' }, 'ren'));
+await expectOk('sink again after revival', action(r[10], 'd', 'd10', { x: true }, 'del'));
+await expectDenied('unknown log action', action(r[11], 'd', 'd30', { n: 'Q' }, 'zzz'));
+
 console.log('anonymous access');
 const anon = initializeApp({ projectId: PROJECT, databaseURL: `http://${HOST}:${PORT}?ns=${PROJECT}` }, 'anon');
 const anonDb = getDatabase(anon);
 connectDatabaseEmulator(anonDb, HOST, PORT);
 await expectOk('public read of state', get(ref(anonDb, 'state/d/d5')));
+await expectOk('public read of the feature flags', get(ref(anonDb, 'caps')));
 await expectDenied('read someone else\'s cooldown', get(ref(b.db, `cool/${a.uid}`)));
 await expectDenied('write without auth', update(ref(anonDb), { 'state/d/d20': { n: 'Z', p: `p${map.d.prov[20]}`, t: TS } }));
 

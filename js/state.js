@@ -178,6 +178,48 @@ export class GameState {
     return out;
   }
 
+  // Districts whose merge chain passes through i (i included): they all come back with it.
+  subtreeOf(i) {
+    const out = [];
+    for (let j = 0; j < this.geo.count; j++) {
+      for (let k = j, steps = 0; k >= 0 && steps <= this.geo.count; k = this.merge[k], steps++) {
+        if (k === i) { out.push(j); break; }
+      }
+    }
+    return out;
+  }
+
+  provinceAlive(pk) {
+    const p = this.provinces.get(pk);
+    return !!p && !p.x;
+  }
+
+  // Province a sunk district returns to: the one its group was in when it sank,
+  // otherwise its own earlier one; null when both are under water too.
+  reviveProvince(i) {
+    const r = this.root[i];
+    for (const pk of [r >= 0 ? this.prov[r] : null, this.prov[i]]) if (pk && this.provinceAlive(pk)) return pk;
+    return null;
+  }
+
+  // The sunk province that took district i down with it, if any.
+  sunkProvinceOf(i) {
+    const r = this.root[i];
+    if (r < 0) return null;
+    const p = this.provinces.get(this.prov[r]);
+    return p && p.x ? this.prov[r] : null;
+  }
+
+  // Districts that come back if province pk is raised (those not sunk on their own).
+  provinceReviveCount(pk) {
+    let n = 0;
+    for (let i = 0; i < this.geo.count; i++) {
+      const r = this.root[i];
+      if (r >= 0 && this.prov[r] === pk && !this.del[r]) n++;
+    }
+    return n;
+  }
+
   boxOf(members) {
     const b = this.geo.box;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;

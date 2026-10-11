@@ -7,7 +7,7 @@ A shared, live map of Turkey's 973 districts (ilçeler), coloured by province (i
 - **rename it**,
 - **move it to another province**, or found a brand-new province for it.
 
-Provinces can also be **renamed** or **sunk entirely**. Every change reaches everyone instantly, and the **Son değişiklikler** panel shows a live feed of who did what. After each change you wait **10 seconds**. The database enforces this wait, so reloading the page does not skip it.
+Provinces can also be **renamed** or **sunk entirely**. Anything under the sea can be **raised again**: tap the water where a district used to be and press **Denizden çıkar** (or raise its whole province). Every change reaches everyone instantly, and the **Son değişiklikler** panel shows a live feed of who did what. After each change you wait **10 seconds**. The database enforces this wait, so reloading the page does not skip it.
 
 The site is static (GitHub Pages). Live sync uses a free Firebase Realtime Database.
 
@@ -46,6 +46,10 @@ Commit `js/config.js` to the branch you publish. Then go to **Settings → Pages
 - In Google Cloud Console → APIs & Services → Credentials, restrict the browser API key to the HTTP referrer `https://<user>.github.io/*`.
 - Enable Firebase **App Check** (reCAPTCHA) to make scripted clients harder.
 
+### Updating the rules later
+
+When `database.rules.json` changes, paste the new version into **Realtime Database → Rules** and press **Publish**. The rules stay compatible with older copies of the site that people still have open, and the site only shows features the published rules support. So publishing before or after the site update is equally safe.
+
 ### Resetting the map
 
 In the Realtime Database **Data** tab, delete the `state`, `log` and `cool` nodes. The next visitor re-seeds the original map.
@@ -63,7 +67,7 @@ In the Realtime Database **Data** tab, delete the `state`, `log` and `cool` node
 
 **Performance.** Geometry is simplified per zoom level (Douglas–Peucker on the shared arcs, so borders never crack) and batched into one path per colour per tile. Only visible tiles are drawn. The expensive layer is rendered into an offscreen bitmap; panning, pinching and flying just transform that bitmap, and a sharp redraw follows when the motion stops. Hit-testing uses bounding boxes plus `isPointInPath`. Clients download the ~35 KB state once, then receive only the changed nodes.
 
-**Cooldown and integrity.** One change is one atomic multi-path write: the changed fields of exactly one district or province, the user's `cool/<uid>` timestamp, and a log entry. The rules require all three to carry the server's own timestamp (`now`). The previous `cool/<uid>` must be at least 10 000 ms older. Each write can touch only the single target named in the cooldown entry. The rules also refuse writes to sunk or merged districts, merges into dead or merged targets (so merge cycles can't form), and moves into sunk provinces. Concurrent edits to different fields of the same district don't overwrite each other.
+**Cooldown and integrity.** One change is one atomic multi-path write: the changed fields of exactly one district or province, the user's `cool/<uid>` timestamp, and a log entry. The rules require all three to carry the server's own timestamp (`now`). The previous `cool/<uid>` must be at least 10 000 ms older. Each write can touch only the single target named in the cooldown entry. The rules also refuse merges into dead or merged targets (so merge cycles can't form) and moves into sunk provinces. A sunk or merged district can only be written to raise it: the write must clear its sea flag and merge link and put it in a living province. Everything that had merged into it comes back with it. A sunk province can only be written to raise it. Concurrent edits to different fields of the same district don't overwrite each other.
 
 The cooldown follows the anonymous Firebase user, so reloads and new tabs don't skip it. A visitor who clears site data or opens a private window becomes a new anonymous user. Per-IP limits would need a server (Cloud Functions on the paid plan).
 
@@ -76,6 +80,7 @@ python3 -m http.server 8080          # then open http://localhost:8080
 ```
 
 - With an empty `js/config.js`, the site runs in **demo mode**. Changes stay in your browser and sync between its tabs.
+- `?demo` forces demo mode even when Firebase is configured, so you can try things without touching the live game.
 - `?emulator=127.0.0.1:9000` connects to a local Realtime Database emulator (`npx firebase-tools emulators:start --only database --project demo-ilceler`).
 
 Tools (`cd tools && npm install`):
@@ -87,7 +92,7 @@ node build-firebase.mjs   # rebuild vendor/firebase.js
 npx firebase-tools emulators:exec --only database --project demo-ilceler "node tools/test-rules.mjs"
 ```
 
-`firebase-tools` isn't a dependency. `npx` fetches it. The rules test covers 41 cases: the cooldown, one target per write, server timestamps, merge, sink and province rules, concurrent edits and unauthenticated access.
+`firebase-tools` isn't a dependency. `npx` fetches it. The rules test covers 57 cases: the cooldown, one target per write, server timestamps, merge, sink, raise and province rules, concurrent edits and unauthenticated access.
 
 ## Data and licences
 
