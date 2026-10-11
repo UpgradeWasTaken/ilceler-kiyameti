@@ -1,0 +1,16 @@
+{
+  "name": "ilceler-kiyameti-tools",
+  "private": true,
+  "type": "module",
+  "description": "Build scripts for map data and the vendored Firebase bundle. Not needed to run the site.",
+  "scripts": {
+    "build:map": "node build-map.mjs",
+    "build:firebase": "node build-firebase.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "firebase": "^13.0.0",
+    "mapshaper": "^0.6.121",
+    "polylabel": "^2.1.0"
+  }
+}
