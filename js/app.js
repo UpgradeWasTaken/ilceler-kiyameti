@@ -1,6 +1,7 @@
 import { Geo } from './geo.js';
-import { GameState, COOLDOWN_MS, districtIndex, districtKey, fold, cleanName } from './state.js';
-import { MapView, PALETTE } from './view.js';
+import { GameState, COOLDOWN_MS, PALETTE, HOME_COUNTRY, nearestPalette, districtIndex, districtKey, fold, cleanName } from './state.js';
+import { MapView } from './view.js';
+import { COUNTRIES, COUNTRY_FULL_NAMES } from './countries.js';
 import { createBackend, preloadBackend } from './backend.js';
 
 const $ = (id) => document.getElementById(id);
@@ -91,6 +92,7 @@ function renderStats() {
   $('stats').replaceChildren(
     el('span', {}, '🗺️ ', b(s.districts.toLocaleString('tr')), ' ilçe'),
     el('span', {}, '🏳️ ', b(s.provinces.toLocaleString('tr')), ' il'),
+    el('span', {}, '🌍 ', b(s.countries.toLocaleString('tr')), ' ülke'),
     el('span', {}, '🌊 ', b(s.sea.toLocaleString('tr')), ' denizde'),
     el('span', {}, '🔗 ', b(s.merged.toLocaleString('tr')), ' birleşmiş'),
   );
@@ -100,10 +102,15 @@ renderStats();
 // ---- selection ------------------------------------------------------------------
 
 const groupOf = (i) => (i >= 0 && state.alive[i] ? state.root[i] : -1);
+// Only districts / provinces that exist in the database can be changed (the Cyprus
+// districts are added to an existing game once the newer database rules are live).
+const districtReady = (r) => backend?.mode === 'local' || state.inDb[r] === 1;
+const provinceReady = (pk) => backend?.mode === 'local' || state.provActionable(pk);
 
 function select(i, { fly = false, pan = true } = {}) {
   selected = groupOf(i);
   view.selected = selected;
+  if (selected >= 0) backend?.checkCaps(); // picks up newly published rules (throttled)
   sunkSel = -1;
   view.sunkSel = null;
   closeForm();
@@ -112,6 +119,7 @@ function select(i, { fly = false, pan = true } = {}) {
   if (selected >= 0) {
     const box = state.boxOf(state.groups.get(selected));
     showTab('sel', true);
+    updateInsets();
     if (fly) view.flyToBox(box);
     else if (pan && isMobile()) setTimeout(() => { updateInsets(); view.ensureVisible(box); }, 60);
   }
@@ -128,6 +136,7 @@ function selectSunk(i, { fly = false, pan = true } = {}) {
   backend?.checkCaps().then(() => renderSelection());
   const box = state.boxOf(members);
   showTab('sel', true);
+  updateInsets();
   if (fly) view.flyToBox(box);
   else if (pan && isMobile()) setTimeout(() => { updateInsets(); view.ensureVisible(box); }, 60);
 }
@@ -164,14 +173,21 @@ function renderSelection() {
   if (r < 0) return;
   const members = state.groups.get(r);
   const pk = state.prov[r];
-  const color = PALETTE[state.provColor(pk)];
+  const color = state.provFill(pk);
+  const country = state.countryOf(pk);
+  const inCountry = country === HOME_COUNTRY ? '' : ` · ${state.countryName(country)}`;
   $('sel-name').textContent = state.name[r];
   const original = geo.names[r] !== state.name[r] ? ` · eski adı ${geo.names[r]}` : '';
-  $('sel-sub').textContent = `${state.provName(pk)} ili${members.length > 1 ? ` · ${members.length} ilçenin birleşimi` : ''}${original}`;
+  $('sel-sub').textContent = `${state.provName(pk)} ili${inCountry}${members.length > 1 ? ` · ${members.length} ilçenin birleşimi` : ''}${original}`;
   $('sel-swatch').style.background = color;
   $('prov-swatch').style.background = color;
   $('prov-name').textContent = `${state.provName(pk)} ili`;
-  $('prov-count').textContent = `${(state.provGroups.get(pk) || []).length} ilçe`;
+  $('prov-count').textContent = `${(state.provGroups.get(pk) || []).length} ilçe${inCountry}`;
+  $('sel-note').hidden = !backend || districtReady(r);
+  $('sel-note').textContent = r >= geo.base.d && !backend?.canV3
+    ? 'Kıbrıs ilçeleri, veritabanı kuralları güncellenince değiştirilebilecek.'
+    : 'Sunucuyla eşitleniyor…';
+  for (const btn of document.querySelectorAll('[data-v3]')) btn.hidden = !!backend && !backend.canV3;
   renderCooldown();
 }
 
@@ -193,7 +209,11 @@ view.onHover = (i, e, sunk = -1) => {
   if ((r < 0 && sunk < 0) || !e) { tip.hidden = true; return; }
   tip.hidden = false;
   if (r < 0) tip.replaceChildren('🌊 ', state.name[sunk], el('small', { textContent: 'denizde' }));
-  else tip.replaceChildren(pick ? '→ ' : '', state.name[r], el('small', { textContent: state.provName(state.prov[r]) }));
+  else {
+    const c = state.countryOf(state.prov[r]);
+    tip.replaceChildren(pick ? '→ ' : '', state.name[r],
+      el('small', { textContent: state.provName(state.prov[r]) + (c === HOME_COUNTRY ? '' : ` · ${state.countryName(c)}`) }));
+  }
   const rect = $('stage').getBoundingClientRect();
   tip.style.left = `${e.clientX - rect.left}px`;
   tip.style.top = `${e.clientY - rect.top}px`;
@@ -252,10 +272,48 @@ const withoutNulls = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) 
 function districtOp(r, fields, log, extra = {}) {
   return { kind: 'd', id: districtKey(r), fields, full: withoutNulls({ ...state.districtNode(r), ...fields }), log, ...extra };
 }
-function provinceOp(pk, fields, log) {
+function provinceOp(pk, fields, log, extra = {}) {
   const p = state.provinces.get(pk);
-  const full = withoutNulls({ n: p.n, c: p.c, ...(p.x ? { x: true } : {}), ...fields });
-  return { kind: 'p', id: pk, fields, full, log };
+  const full = withoutNulls({ n: p.n, c: p.c, ...(p.x ? { x: true } : {}), ...(p.rgb ? { rgb: p.rgb } : {}), ...(p.k ? { k: p.k } : {}), ...fields });
+  return { kind: 'p', id: pk, fields, full, log, ...extra };
+}
+
+// Country chooser: every real country (and de facto ones), countries players founded,
+// or a new one typed in. Countries already on the map are listed first.
+function countryPicker({ act, label, exclude, onChoose }) {
+  const input = el('input', { type: 'text', placeholder: 'Ülke ara ya da yeni ülke adı yaz…', maxLength: 30 });
+  const list = el('ul', { className: 'results', role: 'listbox' });
+  const onMap = new Set([...state.provGroups.keys()].map((pk) => state.countryOf(pk)));
+  const all = Object.entries(COUNTRIES).map(([code, name]) => ({ code, name }))
+    .concat([...state.countries].map(([code, name]) => ({ code, name, custom: true })))
+    .sort((a, c) => (onMap.has(c.code) - onMap.has(a.code)) || a.name.localeCompare(c.name, 'tr'));
+  const refresh = () => {
+    const q = fold(cleanName(input.value));
+    const items = [];
+    let exact = false;
+    for (const c of all) {
+      if (c.code === exclude) continue;
+      const f = fold(c.name);
+      if (q && !f.includes(q) && !fold(COUNTRY_FULL_NAMES[c.code] || '').includes(q)) continue;
+      if (f === q) exact = true;
+      if (items.length >= 80) continue;
+      const li = el('li', {}, c.name, el('small', { textContent: onMap.has(c.code) ? 'haritada' : c.custom ? 'oyuncu ülkesi' : '' }));
+      li.title = COUNTRY_FULL_NAMES[c.code] || c.name;
+      li.onclick = () => onChoose(c);
+      items.push(li);
+    }
+    const name = cleanName(input.value);
+    if (name && !exact) {
+      const li = el('li', { className: 'create', textContent: `➕ “${name}” adında yeni ülke kur` });
+      li.onclick = () => onChoose({ code: null, name, isNew: true });
+      items.unshift(li);
+    }
+    list.replaceChildren(...items);
+  };
+  input.oninput = refresh;
+  openForm(act, el('label', { textContent: label }), input, list, formRow());
+  formSubmit = () => list.firstElementChild?.click();
+  refresh();
 }
 
 // Raising a sunk district: it becomes its own district again (no merge, not sunk) in a living province.
@@ -278,13 +336,14 @@ function provincePicker({ act, label, exclude, colorFor, onChoose, onCreate, map
     const items = [];
     let exact = false;
     for (const pk of [...state.provGroups.keys()].sort((a, c) => state.provName(a).localeCompare(state.provName(c), 'tr'))) {
-      if (pk === exclude) continue;
+      if (pk === exclude || !provinceReady(pk)) continue;
       const name = state.provName(pk);
       if (q && !fold(name).includes(q)) continue;
       if (fold(name) === q) exact = true;
       if (items.length < 60) {
-        const li = el('li', {}, el('span', { className: 'swatch sm', style: `background:${PALETTE[state.provColor(pk)]}` }), name,
-          el('small', { textContent: `${state.provGroups.get(pk).length} ilçe` }));
+        const c = state.countryOf(pk);
+        const li = el('li', {}, el('span', { className: 'swatch sm', style: `background:${state.provFill(pk)}` }), name,
+          el('small', { textContent: `${state.provGroups.get(pk).length} ilçe${c === HOME_COUNTRY ? '' : ` · ${state.countryName(c)}`}` }));
         li.onclick = () => onChoose(pk);
         items.push(li);
       }
@@ -339,13 +398,14 @@ const ACTIONS = {
       const t = groupOf(i);
       if (t < 0) return;
       if (t === r) return toast('Bir ilçe kendisine katılamaz', 'warn');
+      if (!districtReady(t)) return toast('Bu ilçe henüz değiştirilemiyor', 'warn');
       const ok = await confirmBox([b(state.name[r]), ' ilçesi, ', b(state.name[t]), ` (${state.provName(state.prov[t])}) ilçesine katılsın mı? Bu geri alınamaz.`], 'Birleştir');
       if (ok && groupOf(r) === r && groupOf(t) === t) run(districtOp(r, { m: districtKey(t) }, { a: 'mrg', s: state.name[r], o: state.name[t] }));
     };
     const refresh = () => {
       const q = fold(input.value.trim());
       list.replaceChildren(...(q ? searchGroups(q, 30, r) : []).map(({ r: g, name }) => {
-        const li = el('li', {}, el('span', { className: 'swatch sm', style: `background:${PALETTE[state.color[g]]}` }), name,
+        const li = el('li', {}, el('span', { className: 'swatch sm', style: `background:${state.fill[g]}` }), name,
           el('small', { textContent: state.provName(state.prov[g]) }));
         li.onclick = () => target(g);
         return li;
@@ -375,6 +435,102 @@ const ACTIONS = {
       if (!name) return toast('Ad boş olamaz', 'warn');
       if (name === state.provName(pk)) return closeForm();
       run(provinceOp(pk, { n: name }, { a: 'pren', s: state.provName(pk), o: name }));
+    };
+  },
+
+  country(r) {
+    const name = state.name[r];
+    countryPicker({
+      act: 'country',
+      label: `${name} hangi ülkeye geçsin?`,
+      exclude: state.countryOf(state.prov[r]),
+      onChoose: (c) => {
+        if (!backend) return toast('Henüz bağlanılamadı', 'warn');
+        const key = c.isNew ? backend.newCountryKey() : c.code;
+        const newCountry = c.isNew ? { key, n: c.name } : null;
+        const log = { a: 'dcty', s: name, o: c.name };
+        // join one of that country's provinces, or found a new one there
+        const provs = c.isNew ? [] : [...state.provGroups.keys()]
+          .filter((pk) => state.countryOf(pk) === key && provinceReady(pk))
+          .sort((a, b) => state.provName(a).localeCompare(state.provName(b), 'tr'));
+        const list = el('ul', { className: 'results', role: 'listbox' }, ...provs.map((pk) => {
+          const li = el('li', {}, el('span', { className: 'swatch sm', style: `background:${state.provFill(pk)}` }), state.provName(pk),
+            el('small', { textContent: `${state.provGroups.get(pk).length} ilçe` }));
+          li.onclick = () => run(districtOp(r, { p: pk }, log));
+          return li;
+        }));
+        const input = el('input', { type: 'text', value: name, maxLength: 30, required: true });
+        openForm('country',
+          el('label', { textContent: provs.length ? `${c.name}: hangi ile katılsın?` : `${c.name} içinde yeni bir il kurulacak` }),
+          provs.length ? list : null,
+          el('label', { className: 'sub', textContent: provs.length ? '… ya da yeni bir il kur:' : 'Yeni ilin adı:' }),
+          input, formRow('Yeni il kur'));
+        formSubmit = () => {
+          const n = cleanName(input.value);
+          if (!n) return toast('Ad boş olamaz', 'warn');
+          const np = { key: backend.newProvinceKey(), n, c: state.pickColor(r), k: key };
+          run(districtOp(r, { p: np.key }, log, { newProvince: np, ...(newCountry ? { newCountry } : {}) }));
+        };
+      },
+    });
+  },
+
+  pcountry(r) {
+    const pk = state.prov[r];
+    countryPicker({
+      act: 'pcountry',
+      label: `${state.provName(pk)} ili hangi ülkeye geçsin?`,
+      exclude: state.countryOf(pk),
+      onChoose: (c) => {
+        if (!backend) return toast('Henüz bağlanılamadı', 'warn');
+        const key = c.isNew ? backend.newCountryKey() : c.code;
+        run(provinceOp(pk, { k: key }, { a: 'pcty', s: state.provName(pk), o: c.name }, c.isNew ? { newCountry: { key, n: c.name } } : {}));
+      },
+    });
+  },
+
+  pcolor(r) {
+    const pk = state.prov[r];
+    const BASIC = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#00897b', '#1e88e5', '#3949ab', '#8e24aa', '#d81b60', '#6d4c41', '#9e9e9e', '#ffffff'];
+    let hex = state.provFill(pk);
+    const hexOf = (rgb) => '#' + rgb.map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
+    const preview = el('span', { className: 'color-preview' });
+    const hexInput = el('input', { type: 'text', maxLength: 7, className: 'hex', spellcheck: false, ariaLabel: 'Renk kodu' });
+    const native = el('input', { type: 'color', className: 'native', title: 'Renk seçici', ariaLabel: 'Renk seçici' });
+    const sliders = ['R', 'G', 'B'].map((ch, k) => {
+      const range = el('input', { type: 'range', min: 0, max: 255, step: 1, ariaLabel: ['Kırmızı', 'Yeşil', 'Mavi'][k] });
+      const out = el('output', {});
+      range.oninput = () => set(hexOf(sliders.map((x) => +x.range.value)), range);
+      return { range, out, row: el('label', { className: `rgb-row c${k}` }, el('span', { textContent: ch }), range, out) };
+    });
+    const swatches = [...PALETTE, ...BASIC].map((c) => {
+      const btn = el('button', { type: 'button', className: 'sw', title: c });
+      btn.style.background = c;
+      btn.onclick = () => set(c);
+      return btn;
+    });
+    // source: the control being dragged or typed in, which must not be overwritten
+    function set(h, source) {
+      hex = h.toLowerCase();
+      const rgb = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16));
+      preview.style.background = hex;
+      sliders.forEach((sl, k) => { if (sl.range !== source) sl.range.value = rgb[k]; sl.out.textContent = rgb[k]; });
+      if (source !== hexInput) hexInput.value = hex;
+      native.value = hex;
+      swatches.forEach((sw) => sw.classList.toggle('on', sw.title === hex));
+    }
+    hexInput.oninput = () => { const v = hexInput.value.trim(); if (/^#?[0-9a-fA-F]{6}$/.test(v)) set(v.startsWith('#') ? v : `#${v}`, hexInput); };
+    native.oninput = () => set(native.value, native);
+    openForm('pcolor', el('label', { textContent: `${state.provName(pk)} ilinin rengi` }),
+      el('div', { className: 'swatches' }, ...swatches),
+      el('div', { className: 'rgb' }, el('div', { className: 'rgb-top' }, preview, hexInput, native), ...sliders.map((x) => x.row)),
+      formRow('Kaydet'));
+    hexInput.blur(); // no keyboard popping up on phones
+    set(hex);
+    formSubmit = () => {
+      if (hex === state.provFill(pk)) return closeForm();
+      const idx = PALETTE.indexOf(hex);
+      run(provinceOp(pk, idx >= 0 ? { c: idx, rgb: null } : { rgb: hex, c: nearestPalette(hex) }, { a: 'pclr', s: state.provName(pk), o: hex }));
     };
   },
 
@@ -461,13 +617,23 @@ const cooldown = {
 };
 
 let coolTimer = 0;
+const PROVINCE_ACTIONS = new Set(['prename', 'pdelete', 'pcolor', 'pcountry']);
+const V3_ACTIONS = new Set(['country', 'pcolor', 'pcountry']);
+function allowed(act) {
+  if (V3_ACTIONS.has(act) && !backend?.canV3) return false;
+  if (act === 'revive') return sunkSel >= 0 && districtReady(sunkSel);
+  if (act === 'previve') return sunkSel >= 0 && provinceReady(state.sunkProvinceOf(sunkSel));
+  const r = groupOf(selected);
+  if (r < 0) return false;
+  return PROVINCE_ACTIONS.has(act) ? provinceReady(state.prov[r]) : districtReady(r);
+}
 function renderCooldown() {
   const left = cooldown.left();
   const ready = left <= 0;
   $('cool').dataset.ready = ready ? '1' : '0';
   $('cool-fill').style.transform = `scaleX(${ready ? 1 : 1 - Math.min(1, left / COOLDOWN_MS)})`;
   $('cool-text').textContent = ready ? 'Hamle yapabilirsin' : `Sonraki hamle: ${(left / 1000).toFixed(1)} sn`;
-  for (const btn of document.querySelectorAll('[data-act]')) btn.disabled = !ready || !backend;
+  for (const btn of document.querySelectorAll('[data-act]')) btn.disabled = !ready || !backend || !allowed(btn.dataset.act);
   clearTimeout(coolTimer);
   if (!ready) coolTimer = setTimeout(renderCooldown, 100);
 }
@@ -482,7 +648,8 @@ const nick = () => cleanName(nickInput.value).slice(0, 20);
 
 // ---- live feed ------------------------------------------------------------------------
 
-const ICONS = { del: '🌊', mrg: '🔗', ren: '✏️', prv: '🏳️', pren: '✏️', pdel: '🌊', rev: '🏝️', prev: '🏝️' };
+const ICONS = { del: '🌊', mrg: '🔗', ren: '✏️', prv: '🏳️', pren: '✏️', pdel: '🌊', rev: '🏝️', prev: '🏝️', dcty: '🌍', pcty: '🌍', pclr: '🎨' };
+const colorDot = (c) => el('span', { className: 'dot', style: `background:${/^#[0-9a-f]{6}$/i.test(c) ? c : '#ccc'}` });
 function describe(e) {
   const s = e.s || '?', o = e.o || '?';
   switch (e.a) {
@@ -494,6 +661,9 @@ function describe(e) {
     case 'pdel': return [b(s), ` ili (${o}) denize gömüldü`];
     case 'rev': return [b(s), ' ilçesi denizden çıktı (', b(o), ' ili)'];
     case 'prev': return [b(s), ` ili (${o}) denizden çıktı`];
+    case 'dcty': return [b(s), ' ilçesi ', b(o), ' ülkesine geçti'];
+    case 'pcty': return [b(s), ' ili ', b(o), ' ülkesine geçti'];
+    case 'pclr': return [b(s), ' ilinin rengi değişti ', colorDot(o)];
     default: return ['Bilinmeyen değişiklik'];
   }
 }
@@ -614,9 +784,11 @@ const searchBox = {
     this.list.hidden = !this.items.length || document.activeElement !== this.input;
     this.list.replaceChildren(...this.items.map((it, k) => {
       const swatch = it.type === 's' ? el('span', { className: 'swatch sm sea' })
-        : el('span', { className: 'swatch sm', style: `background:${PALETTE[it.type === 'p' ? state.provColor(it.pk) : state.color[it.r]]}` });
+        : el('span', { className: 'swatch sm', style: `background:${it.type === 'p' ? state.provFill(it.pk) : state.fill[it.r]}` });
+      const pk = it.type === 'p' ? it.pk : it.type === 'd' ? state.prov[it.r] : null;
+      const country = pk && state.countryOf(pk) !== HOME_COUNTRY ? ` · ${state.countryName(state.countryOf(pk))}` : '';
       const li = el('li', { role: 'option' }, swatch, it.name,
-        el('small', { textContent: it.type === 'p' ? 'il' : it.type === 's' ? '🌊 denizde' : state.provName(state.prov[it.r]) }));
+        el('small', { textContent: it.type === 'p' ? `il${country}` : it.type === 's' ? '🌊 denizde' : state.provName(pk) + country }));
       li.setAttribute('aria-selected', String(k === this.active));
       li.onpointerdown = (e) => { e.preventDefault(); this.choose(it); };
       return li;
@@ -704,6 +876,7 @@ document.addEventListener('keydown', (e) => {
 createBackend(geo, {
   district(key, v) { if (state.setDistrict(key, v) >= 0) markDirty(); },
   province(key, v) { if (state.setProvince(key, v)) markDirty(); },
+  country(key, v) { if (state.setCountry(key, v)) markDirty(); },
   log(key, e, live) { feed.add(key, e, live); },
   status: setStatus,
   cooldown(until) { cooldown.setUntil(until); },

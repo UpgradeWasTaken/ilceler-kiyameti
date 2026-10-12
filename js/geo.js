@@ -18,6 +18,8 @@ export class Geo {
     this.geom = d.geom;
     this.landGeom = m.land;
     this.provinces = m.provinces;
+    // ids up to base were seeded by the first version of the site; newer ones are added on top
+    this.base = m.base || { d: this.count, p: Object.keys(m.provinces).length };
     this.countryLabels = m.countryLabels;
     this.seaLabels = m.seaLabels;
     this.attribution = m.attribution;

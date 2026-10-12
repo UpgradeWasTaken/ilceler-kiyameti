@@ -1,5 +1,5 @@
-// Builds data/map.json: Turkish districts (ilçeler) with shared-border topology,
-// projected to Web Mercator, simplified and quantized for fast canvas rendering.
+// Builds data/map.json: Turkish and Cypriot districts (ilçeler) with shared-border
+// topology, projected to Web Mercator, simplified and quantized for fast canvas rendering.
 //
 //   cd tools && npm install && NODE_USE_ENV_PROXY=1 node build-map.mjs
 //
@@ -7,6 +7,11 @@
 //   - Districts & provinces: geoBoundaries gbOpen TUR ADM2/ADM1
 //     (derived from OpenStreetMap, ODbL 1.0 — © OpenStreetMap contributors)
 //   - Lakes and neighbouring countries: Natural Earth 1:10m (public domain)
+//   - Cyprus villages: geoBoundaries gbOpen CYP ADM2/ADM1 (Wikipedia / Cyprus Department
+//     of Lands and Surveys, CC BY-SA 3.0); the KKTC/GKRY line: Natural Earth
+//
+// The first 973 districts and 81 provinces must keep their index and province forever:
+// the live game stores its state under those ids. New districts are only ever appended.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +31,12 @@ const SOURCES = {
   lakes: `${NE}/ne_10m_lakes.geojson`,
   lakesEu: `${NE}/ne_10m_lakes_europe.geojson`,
   countries: `${NE}/ne_10m_admin_0_countries.geojson`,
+  cypAdm2: 'https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/main/releaseData/gbOpen/CYP/ADM2/geoBoundaries-CYP-ADM2.geojson',
+  cypAdm1: 'https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/main/releaseData/gbOpen/CYP/ADM1/geoBoundaries-CYP-ADM1.geojson',
 };
+// Ids already used by the live game (see the note at the top).
+const BASE_DISTRICTS = 973;
+const BASE_PROVINCES = 81;
 
 // Area shown around Turkey (lon/lat). Neighbouring land is clipped to this box.
 const VIEW_BBOX = [18.0, 30.5, 52.0, 47.5];
@@ -53,6 +63,32 @@ const PROVINCES = {
   77: 'Yalova', 78: 'Karabük', 79: 'Kilis', 80: 'Osmaniye', 81: 'Düzce',
 };
 const PROVINCE_ALIASES = { 'Hakkâri': 'Hakkari' };
+// Provinces outside Turkey: plate -> [name, country code].
+const FOREIGN_PROVINCES = { 82: ['Kuzey Kıbrıs', 'KKTC'], 83: ['Güney Kıbrıs', 'CY'] };
+
+// KKTC districts are not published as open polygons, so they are assembled from the
+// island's village boundaries. Villages of Lefke and Güzelyurt are listed by name; the
+// rest follow the old (de jure) district they belong to, see kktcDistrict().
+const LEFKE = new Set(['Mansoura', 'Loutros', 'Galini', 'Karavostasi', 'Lefka', 'Peristeronari',
+  'Kalo Chorio Soleas', 'Agios Nikolaos Soleas', 'Pentageia', 'Agios Georgios Soleas', 'Kazivera',
+  'Petra', 'Elia Lefkosias', 'Angolemi']);
+const GUZELYURT = new Set(['Syrianochori', 'Prastio Lefkosias', 'Nikitas', 'Morfou', 'Kato Zodeia',
+  'Pano Zodeia', 'Argaki', 'Kalo Chorio Kapouti', 'Katokopia', 'Kyra', 'Masari', 'Dyo Potamoi', 'Fyllia']);
+const GKRY_BY_DISTRICT = { Nicosia: 'Güney Lefkoşa', Larnaca: 'Larnaka', Limassol: 'Leymosun', Paphos: 'Baf', Famagusta: 'Güney Mağusa' };
+const CYPRUS_ORDER = [
+  [82, ['Gazimağusa', 'Girne', 'Güzelyurt', 'İskele', 'Lefke', 'Lefkoşa']],
+  [83, ['Baf', 'Güney Lefkoşa', 'Güney Mağusa', 'Larnaka', 'Leymosun']],
+];
+
+function kktcDistrict(name, oldDistrict, x, y) {
+  if (oldDistrict === 'Kyrenia') return 'Girne';
+  if (LEFKE.has(name)) return 'Lefke';
+  if (GUZELYURT.has(name)) return 'Güzelyurt';
+  if (oldDistrict === 'Nicosia') return 'Lefkoşa';
+  if (oldDistrict === 'Famagusta') return (x >= 33.80 && y >= 35.30) || (x >= 33.87 && y >= 35.27) ? 'İskele' : 'Gazimağusa';
+  if (oldDistrict === 'Larnaca') return 'Gazimağusa';
+  return null;
+}
 
 // Source names that are wrong, English or not in official form.
 const NAME_FIXES = {
@@ -72,7 +108,7 @@ const PALETTE_SIZE = 8;
 const COUNTRY_LABELS = [
   ['YUNANİSTAN', 22.6, 40.2], ['BULGARİSTAN', 26.4, 42.62], ['GÜRCİSTAN', 43.15, 41.95],
   ['ERMENİSTAN', 44.45, 40.55], ['AZERBAYCAN', 45.45, 39.32], ['İRAN', 45.6, 37.4],
-  ['IRAK', 43.4, 36.35], ['SURİYE', 38.6, 35.75], ['KIBRIS', 33.2, 35.0],
+  ['IRAK', 43.4, 36.35], ['SURİYE', 38.6, 35.75],
 ];
 const SEA_LABELS = [
   ['K A R A D E N İ Z', 34.4, 42.75, 1.6, 0], ['A K D E N İ Z', 31.2, 35.25, 1.6, 0],
@@ -116,9 +152,77 @@ function mercator(lon, lat) {
   return [A * ((lon - LON0) * Math.PI) / 180, y];
 }
 
+// Cyprus: KKTC districts from villages north of the line, GKRY districts from the old
+// districts south of it. The UN buffer zone and the British bases go to the south.
+async function buildCyprus(countries, cypAdm2, cypAdm1) {
+  const ne = (await ms(
+    '-i c.json -filter "[\'CYN\',\'CYP\',\'CNM\',\'ESB\',\'WSB\'].indexOf(ADM0_A3) > -1" -filter-fields ADM0_A3 -o format=geojson out.json',
+    { 'c.json': countries }))['out.json'];
+  const pts = JSON.parse((await ms(
+    '-i v.json -points inner -each "x=this.x, y=this.y" -join d.json fields=shapeName prefix=old_ -join ne.json fields=ADM0_A3 -o format=json out.json',
+    { 'v.json': cypAdm2, 'd.json': cypAdm1, 'ne.json': ne }))['out.json']);
+
+  const villages = JSON.parse(cypAdm2);
+  const north = pts.map((p) => p.ADM0_A3 === 'CYN');
+  const kd = pts.map((p, i) => (north[i] ? kktcDistrict(p.shapeName, p.old_shapeName, p.x, p.y) : null));
+  const gd = pts.map((p) => GKRY_BY_DISTRICT[p.old_shapeName] || null);
+  // villages left undecided take the label of the nearest decided village
+  const nearest = (labels, i) => {
+    let best = null, bd = Infinity;
+    labels.forEach((l, j) => {
+      if (!l) return;
+      const d = (pts[j].x - pts[i].x) ** 2 + (pts[j].y - pts[i].y) ** 2;
+      if (d < bd) { bd = d; best = l; }
+    });
+    return best;
+  };
+  const kdAll = kd.map((l, i) => l || nearest(kd, i));
+  const gdAll = gd.map((l, i) => l || nearest(gd, i));
+  villages.features.forEach((f, i) => { f.properties = { kd: kdAll[i], gd: gdAll[i], side: north[i] ? 'n' : 's' }; });
+
+  // The south's mask: what Natural Earth gives the south (Cyprus, buffer zone, bases),
+  // plus coastal slivers outside every Natural Earth shape that belong to southern villages.
+  const out = await ms([
+    '-i v.json name=v',
+    '-i ne.json name=ne',
+    '-filter target=ne "ADM0_A3 === \'CYN\'" + name=n',
+    '-filter target=ne "ADM0_A3 !== \'CYN\'" + name=s',
+    '-dissolve target=v + name=island',
+    '-clip target=island source=s + name=core',
+    '-erase target=island source=n + name=orphans',
+    '-erase target=orphans source=s',
+    '-explode target=orphans',
+    '-each target=orphans "oid=this.id"',
+    '-points target=orphans inner + name=op',
+    '-join target=op source=v fields=side',
+    '-join target=orphans source=op keys=oid,oid fields=side',
+    '-filter target=orphans "side === \'s\'"',
+    '-merge-layers target=core,orphans force name=south',
+    '-dissolve target=south',
+    '-dissolve target=v kd + name=k',
+    '-erase target=k source=south',
+    '-dissolve target=v gd + name=g',
+    '-clip target=g source=south',
+    '-o target=k format=geojson k.json',
+    '-o target=g format=geojson g.json',
+  ].join(' '), { 'v.json': JSON.stringify(villages), 'ne.json': ne });
+  const byName = new Map();
+  for (const f of JSON.parse(out['k.json']).features) byName.set(`82:${f.properties.kd}`, f.geometry);
+  for (const f of JSON.parse(out['g.json']).features) byName.set(`83:${f.properties.gd}`, f.geometry);
+  const result = [];
+  for (const [plate, names] of CYPRUS_ORDER) {
+    for (const name of names) {
+      const geometry = byName.get(`${plate}:${name}`);
+      if (!geometry) throw new Error(`Cyprus district missing: ${name}`);
+      result.push({ geometry, plate, name });
+    }
+  }
+  return { districts: result, ne: JSON.parse(ne).features };
+}
+
 async function main() {
-  const [adm2, adm1, lakes, lakesEu, countries] = await Promise.all(
-    ['adm2', 'adm1', 'lakes', 'lakesEu', 'countries'].map(download));
+  const [adm2, adm1, lakes, lakesEu, countries, cypAdm2, cypAdm1] = await Promise.all(
+    ['adm2', 'adm1', 'lakes', 'lakesEu', 'countries', 'cypAdm2', 'cypAdm1'].map(download));
 
   // 1. Assign every district to a province with a point-in-polygon join.
   const joined = JSON.parse((await ms(
@@ -134,6 +238,9 @@ async function main() {
     return { geometry: f.geometry, plate, name: cleanName(f.properties.shapeName, provName) };
   });
   districts.sort((a, b) => a.plate - b.plate || trCollator.compare(a.name, b.name));
+  if (districts.length !== BASE_DISTRICTS) throw new Error(`expected ${BASE_DISTRICTS} Turkish districts`);
+  const cyprus = await buildCyprus(countries, cypAdm2, cypAdm1);
+  districts.push(...cyprus.districts);
   const perProvince = {};
   for (const d of districts) perProvince[d.plate] = (perProvince[d.plate] || 0) + 1;
   console.log(`${districts.length} districts in ${Object.keys(perProvince).length} provinces`);
@@ -158,6 +265,8 @@ async function main() {
     combined.features.push({ type: 'Feature', properties: { k: 'ne' }, geometry: f.geometry });
     if (f.properties.ADM0_A3 === 'TUR') combined.features.push({ type: 'Feature', properties: { k: 'netur' }, geometry: f.geometry });
   }
+  // Natural Earth's own Cyprus pieces also mark coastline slivers to drop from the land.
+  for (const f of cyprus.ne) combined.features.push({ type: 'Feature', properties: { k: 'netur' }, geometry: f.geometry });
   for (const f of lakeFeatures) combined.features.push({ type: 'Feature', properties: { k: 'lake' }, geometry: f.geometry });
 
   const topoOut = await ms([
@@ -270,7 +379,7 @@ async function main() {
   out.geom.forEach((polys, i) => {
     for (const poly of polys) for (const ring of poly) for (const a of ring) arcOwners[a < 0 ? ~a : a].push(i);
   });
-  const adj = new Map(Object.keys(PROVINCES).map((p) => [+p, new Set()]));
+  const adj = new Map([...Object.keys(PROVINCES), ...Object.keys(FOREIGN_PROVINCES)].map((p) => [+p, new Set()]));
   for (const owners of arcOwners) {
     if (owners.length !== 2) continue;
     const [pa, pb] = owners.map((i) => out.prov[i]);
@@ -301,11 +410,29 @@ async function main() {
     arcs: arcsOut,
     d: out,
     land: landPolys,
-    provinces: Object.fromEntries(Object.entries(PROVINCES).map(([k, n]) => [k, [n, colors.get(+k)]])),
+    // plate -> [name, colour index] for Turkey, [name, colour index, country] elsewhere
+    provinces: Object.fromEntries([
+      ...Object.entries(PROVINCES).map(([k, n]) => [k, [n, colors.get(+k)]]),
+      ...Object.entries(FOREIGN_PROVINCES).map(([k, [n, country]]) => [k, [n, colors.get(+k), country]]),
+    ]),
+    // ids up to here were seeded by the original site; newer ones are added on top
+    base: { d: BASE_DISTRICTS, p: BASE_PROVINCES },
     countryLabels: COUNTRY_LABELS.map(project),
     seaLabels: SEA_LABELS.map(project),
-    attribution: 'İlçe sınırları: © OpenStreetMap katkıcıları (ODbL) via geoBoundaries · Göller ve komşu ülkeler: Natural Earth',
+    attribution: 'İlçe sınırları: © OpenStreetMap katkıcıları (ODbL) via geoBoundaries · Kıbrıs köyleri: geoBoundaries / Wikipedia (CC BY-SA 3.0) · Göller ve komşu ülkeler: Natural Earth',
   };
+  // Guard the live game: existing ids must keep their district, province and colour.
+  if (fs.existsSync(OUT)) {
+    const prev = JSON.parse(fs.readFileSync(OUT, 'utf8'));
+    for (let i = 0; i < BASE_DISTRICTS; i++) {
+      if (prev.d.names[i] !== result.d.names[i] || prev.d.prov[i] !== result.d.prov[i]) {
+        throw new Error(`district ${i} changed: ${prev.d.names[i]} -> ${result.d.names[i]}`);
+      }
+    }
+    for (let k = 1; k <= BASE_PROVINCES; k++) {
+      if (String(prev.provinces[k]) !== String(result.provinces[k].slice(0, 2))) throw new Error(`province ${k} changed`);
+    }
+  }
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, JSON.stringify(result));
   const pts = arcsOut.reduce((s, a) => s + a.length / 2, 0);

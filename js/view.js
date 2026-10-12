@@ -1,9 +1,8 @@
 // Canvas map renderer: level-of-detail geometry, tiled Path2D batches per colour,
 // border classification, labels, highlights and pan / zoom / pinch input.
 
-import { ARC_DIST, ARC_PROV, ARC_COUNTRY, ARC_COAST } from './state.js';
+import { ARC_DIST, ARC_PROV, ARC_COUNTRY, ARC_COAST, HOME_COUNTRY } from './state.js';
 
-export const PALETTE = ['#f4b8c6', '#93dd8f', '#f9e46f', '#f6a944', '#f28482', '#b5d466', '#cdbfa7', '#bde9d6'];
 const SEA = '#bfe6f0';
 const SEA_RGBA0 = 'rgba(191,230,240,0)';
 const LAND = '#f7f0c9';
@@ -335,15 +334,17 @@ export class MapView {
     return (this.layers[L] = { tiles, nx, ny, tw, th, x0, y0 });
   }
 
+  // One path per fill colour in the tile.
   tileFills(t, L) {
     const v = this.state.version;
     if (t.fv === v) return t.fills;
-    const fills = new Array(PALETTE.length).fill(null);
-    const { alive, color } = this.state;
+    const fills = new Map();
+    const { alive, fill } = this.state;
     for (const d of t.ds) {
       if (!alive[d]) continue;
-      const c = color[d];
-      (fills[c] || (fills[c] = new Path2D())).addPath(this.geo.districtPath(d, L));
+      let p = fills.get(fill[d]);
+      if (!p) fills.set(fill[d], (p = new Path2D()));
+      p.addPath(this.geo.districtPath(d, L));
     }
     t.fv = v;
     return (t.fills = fills);
@@ -467,8 +468,7 @@ export class MapView {
     const vx0 = -x / s, vy0 = -y / s, vx1 = (w - x) / s, vy1 = (h - y) / s;
     const tiles = this.layer(L).tiles.filter((t) => t.x1 >= vx0 && t.x0 <= vx1 && t.y1 >= vy0 && t.y0 <= vy1);
     for (const t of tiles) {
-      const f = this.tileFills(t, L);
-      for (let c = 0; c < f.length; c++) if (f[c]) { ctx.fillStyle = PALETTE[c]; ctx.fill(f[c]); }
+      for (const [color, path] of this.tileFills(t, L)) { ctx.fillStyle = color; ctx.fill(path); }
     }
     const zf = clamp(Math.log2(Math.max(1, this.zoom)) / 5, 0, 1);
     for (const [ty, col, w0, w1] of BORDERS) {
@@ -586,15 +586,27 @@ export class MapView {
       ctx.font = font;
       ctx.globalAlpha = pa;
       ctx.fillStyle = '#141414';
+      const cfont = `italic 600 ${z < 1.25 ? 8.5 : 9.5}px ${FONT}`;
       for (const pk of state.provOrder) {
         const pt = state.provLabel.get(pk);
         const sx = pt[0] * s + x, sy = pt[1] * s + y;
         if (sx < -80 || sx > W + 80 || sy < -20 || sy > H + 20) continue;
         const text = state.provName(pk).toLocaleUpperCase('tr');
-        const w = this.measure(text, font);
-        if (!free(sx - w / 2 - 2, sy - 7, sx + w / 2 + 2, sy + 7)) continue;
+        const country = state.countryOf(pk);
+        // provinces outside Turkey carry their country's name on a second line
+        const sub = country === HOME_COUNTRY ? '' : state.countryName(country);
+        const w = Math.max(this.measure(text, font), sub ? this.measure(sub, cfont) : 0);
+        if (!free(sx - w / 2 - 2, sy - 7, sx + w / 2 + 2, sy + (sub ? 18 : 7))) continue;
+        ctx.font = font;
         ctx.strokeText(text, sx, sy);
         ctx.fillText(text, sx, sy);
+        if (sub) {
+          ctx.font = cfont;
+          ctx.fillStyle = '#7a1f1a';
+          ctx.strokeText(sub, sx, sy + 11);
+          ctx.fillText(sub, sx, sy + 11);
+          ctx.fillStyle = '#141414';
+        }
       }
       ctx.globalAlpha = 1;
     }

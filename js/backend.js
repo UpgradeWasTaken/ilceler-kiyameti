@@ -2,8 +2,8 @@
 // database.rules.json enforce the 10 s cooldown server-side); LocalBackend is a
 // same-interface demo used while no Firebase project is configured.
 //
-// Handlers: district(key, node), province(key, node), log(key, entry, isLive),
-//           status(kind, detail), cooldown(untilServerMs), caps()
+// Handlers: district(key, node), province(key, node), country(key, node),
+//           log(key, entry, isLive), status(kind, detail), cooldown(untilServerMs), caps()
 
 import { FIREBASE_CONFIG } from './config.js';
 import { COOLDOWN_MS } from './state.js';
@@ -33,11 +33,22 @@ export async function createBackend(geo, handlers) {
   return b;
 }
 
+// The original map, as the first version of the site seeded it ...
 export function buildSeed(geo) {
   const d = {}, p = {};
-  for (let i = 0; i < geo.count; i++) d[`d${i}`] = { n: geo.names[i], p: `p${geo.plates[i]}` };
-  for (const [k, [n, c]] of Object.entries(geo.provinces)) p[`p${k}`] = { n, c };
+  for (let i = 0; i < geo.base.d; i++) d[`d${i}`] = { n: geo.names[i], p: `p${geo.plates[i]}` };
+  for (const [k, [n, c]] of Object.entries(geo.provinces)) if (+k <= geo.base.p) p[`p${k}`] = { n, c };
   return { v: 1, d, p };
+}
+
+// ... and the districts and provinces added since (Cyprus), as one multi-path update.
+export function buildTopUp(geo) {
+  const u = {};
+  for (const [k, [n, c, country]] of Object.entries(geo.provinces)) {
+    if (+k > geo.base.p) u[`state/p/p${k}`] = country ? { n, c, k: country } : { n, c };
+  }
+  for (let i = geo.base.d; i < geo.count; i++) u[`state/d/d${i}`] = { n: geo.names[i], p: `p${geo.plates[i]}` };
+  return u;
 }
 
 function logEntry(uid, t, op, nick) {
@@ -74,19 +85,51 @@ class FirebaseBackend {
     this.offset = 0;
     this.uid = null;
     this.canRevive = false;
+    this.canV3 = false;
     this.capsChecked = 0;
   }
 
   now() { return Date.now() + this.offset; }
 
-  // Database rules that allow raising districts from the sea also make /caps readable;
-  // older rules deny that read, so the site keeps the feature hidden until they are published.
+  // Each rules version makes one more /caps… node readable; older rules deny the read,
+  // so the site keeps newer features hidden until their rules are published.
+  // caps: raising from the sea · caps3: countries, colours and the Cyprus districts
   async checkCaps() {
-    if (this.canRevive || Date.now() - this.capsChecked < 20000) return this.canRevive;
+    if ((this.canRevive && this.canV3) || Date.now() - this.capsChecked < 20000) return this.canRevive;
     this.capsChecked = Date.now();
-    this.canRevive = await this.fb.get(this.fb.ref(this.db, 'caps')).then(() => true, () => false);
-    if (this.canRevive) this.h.caps?.();
+    const readable = (path) => this.fb.get(this.fb.ref(this.db, path)).then(() => true, () => false);
+    const [revive, v3] = await Promise.all([readable('caps'), readable('caps3')]);
+    const changed = revive !== this.canRevive || v3 !== this.canV3;
+    this.canRevive = revive;
+    this.canV3 = v3;
+    if (changed) {
+      this.h.caps?.();
+      if (v3) this.topUp();
+    }
     return this.canRevive;
+  }
+
+  // Adds districts newer than the live database (once, by whichever visitor comes first).
+  // Calls are queued so the check always sees the result of the previous one.
+  topUp() {
+    this.topUpQueue = (this.topUpQueue || Promise.resolve()).then(() => this.tryTopUp());
+    return this.topUpQueue;
+  }
+
+  async tryTopUp() {
+    if (this.toppedUp || !this.uid || !this.canV3) return;
+    const { fb, db } = this;
+    try {
+      const [seeded, newest] = await Promise.all([
+        fb.get(fb.ref(db, 'state/v')),
+        fb.get(fb.ref(db, `state/d/d${this.geo.count - 1}`)),
+      ]);
+      if (!seeded.exists()) return; // not seeded yet; start() calls again afterwards
+      if (!newest.exists()) await fb.update(fb.ref(db), buildTopUp(this.geo));
+      this.toppedUp = true;
+    } catch (e) {
+      console.warn('top-up skipped:', e.message);
+    }
   }
 
   async start() {
@@ -109,9 +152,12 @@ class FirebaseBackend {
     // Public data first, so the map comes alive while sign-in is still running.
     fb.onValue(ref('.info/serverTimeOffset'), (s) => { this.offset = s.val() || 0; });
     fb.onValue(ref('.info/connected'), (s) => this.h.status(s.val() ? 'live' : 'connecting'));
-    const dRef = ref('state/d'), pRef = ref('state/p');
+    const dRef = ref('state/d'), pRef = ref('state/p'), cRef = ref('state/c');
     const onD = (s) => this.h.district(s.key, s.val());
     const onP = (s) => this.h.province(s.key, s.val());
+    const onC = (s) => this.h.country(s.key, s.val());
+    fb.onChildAdded(cRef, onC);
+    fb.onChildChanged(cRef, onC);
     fb.onChildAdded(pRef, onP);
     fb.onChildChanged(pRef, onP);
     fb.onChildAdded(dRef, onD);
@@ -143,6 +189,7 @@ class FirebaseBackend {
     if (seeded && !seeded.exists()) {
       await fb.set(ref('state'), buildSeed(this.geo)).catch((e) => console.warn('seed skipped:', e.message));
     }
+    this.topUp();
   }
 
   async signIn(fb, app) {
@@ -158,6 +205,10 @@ class FirebaseBackend {
     return this.fb.push(this.fb.ref(this.db, 'state/p')).key;
   }
 
+  newCountryKey() {
+    return this.fb.push(this.fb.ref(this.db, 'state/c')).key;
+  }
+
   // One action = one atomic multi-path update: the changed fields of exactly one
   // district or province, this user's cooldown stamp and a log entry.
   async submit(op, nick) {
@@ -168,7 +219,11 @@ class FirebaseBackend {
     const u = {};
     for (const [k, v] of Object.entries(op.fields)) u[`${base}/${k}`] = v;
     u[`${base}/t`] = TS;
-    if (op.newProvince) u[`state/p/${op.newProvince.key}`] = { n: op.newProvince.n, c: op.newProvince.c };
+    if (op.newProvince) {
+      const np = op.newProvince;
+      u[`state/p/${np.key}`] = np.k ? { n: np.n, c: np.c, k: np.k } : { n: np.n, c: np.c };
+    }
+    if (op.newCountry) u[`state/c/${op.newCountry.key}`] = { n: op.newCountry.n };
     u[`cool/${this.uid}`] = { t: TS, k: op.kind, i: op.id };
     u[`log/${fb.push(fb.ref(db, 'log')).key}`] = logEntry(this.uid, TS, op, nick);
     try {
@@ -186,6 +241,7 @@ class LocalBackend {
     this.h = h;
     this.mode = 'local';
     this.canRevive = true;
+    this.canV3 = true;
     this.key = 'ik-demo-v1';
     this.uid = storageGet('ik-demo-uid');
     if (!this.uid) storageSet('ik-demo-uid', (this.uid = `demo${randomId(8)}`));
@@ -196,9 +252,9 @@ class LocalBackend {
   load() {
     try {
       const v = JSON.parse(storageGet(this.key) || 'null');
-      if (v && v.d && v.p && Array.isArray(v.log)) return v;
+      if (v && v.d && v.p && Array.isArray(v.log)) return { c: {}, ...v };
     } catch { /* corrupted: start over */ }
-    return { d: {}, p: {}, log: [] };
+    return { d: {}, p: {}, c: {}, log: [] };
   }
 
   start() {
@@ -217,6 +273,7 @@ class LocalBackend {
   }
 
   emitAll(data, prev) {
+    for (const [k, v] of Object.entries(data.c)) if (!prev || !prev.c[k]) this.h.country(k, v);
     for (const [k, v] of Object.entries(data.p)) if (!prev || JSON.stringify(prev.p[k]) !== JSON.stringify(v)) this.h.province(k, v);
     for (const [k, v] of Object.entries(data.d)) if (!prev || JSON.stringify(prev.d[k]) !== JSON.stringify(v)) this.h.district(k, v);
     const seen = new Set(prev ? prev.log.map((e) => e.k) : []);
@@ -224,6 +281,8 @@ class LocalBackend {
   }
 
   newProvinceKey() { return `-L${randomId(18)}`; }
+
+  newCountryKey() { return `-L${randomId(18)}`; }
 
   async checkCaps() { return true; }
 
@@ -234,7 +293,11 @@ class LocalBackend {
     const data = this.load();
     const table = op.kind === 'd' ? data.d : data.p;
     table[op.id] = { ...op.full, t };
-    if (op.newProvince) data.p[op.newProvince.key] = { n: op.newProvince.n, c: op.newProvince.c };
+    if (op.newProvince) {
+      const np = op.newProvince;
+      data.p[np.key] = np.k ? { n: np.n, c: np.c, k: np.k } : { n: np.n, c: np.c };
+    }
+    if (op.newCountry) data.c[op.newCountry.key] = { n: op.newCountry.n };
     data.log.push({ ...logEntry(this.uid, t, op, nick), k: `${t}${randomId(4)}` });
     if (data.log.length > 300) data.log.splice(0, data.log.length - 300);
     storageSet('ik-demo-cool', String(t));

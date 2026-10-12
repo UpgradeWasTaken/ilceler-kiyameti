@@ -30,12 +30,22 @@ async function user() {
   return { db, uid };
 }
 
+// The original map (what the first site version seeded) ...
 function seed() {
   const d = {}, p = {};
-  map.d.names.forEach((n, i) => { d[`d${i}`] = { n, p: `p${map.d.prov[i]}` }; });
-  for (const [k, [n, c]] of Object.entries(map.provinces)) p[`p${k}`] = { n, c };
+  map.d.names.forEach((n, i) => { if (i < map.base.d) d[`d${i}`] = { n, p: `p${map.d.prov[i]}` }; });
+  for (const [k, [n, c]] of Object.entries(map.provinces)) if (+k <= map.base.p) p[`p${k}`] = { n, c };
   return { v: 1, d, p };
 }
+
+// ... and what newer versions add on top of it (Cyprus).
+function topUp() {
+  const u = {};
+  for (const [k, [n, c, country]] of Object.entries(map.provinces)) if (+k > map.base.p) u[`state/p/p${k}`] = { n, c, k: country };
+  map.d.names.forEach((n, i) => { if (i >= map.base.d) u[`state/d/d${i}`] = { n, p: `p${map.d.prov[i]}` }; });
+  return u;
+}
+const idx = (name) => map.d.names.indexOf(name);
 
 async function node(db, path) { return (await get(ref(db, path))).val(); }
 
@@ -69,9 +79,15 @@ const c = await user();
 const fresh = async () => user();
 
 console.log('seeding');
+await expectDenied('top-up before the map is seeded', update(ref(a.db), topUp()));
 await expectDenied('partial seed', set(ref(a.db, 'state'), { v: 1, d: { d0: { n: 'X', p: 'p1' } }, p: { p1: { n: 'Adana', c: 0 } } }));
 await expectOk('full seed', set(ref(a.db, 'state'), seed()));
 await expectDenied('second seed', set(ref(b.db, 'state'), seed()));
+await expectOk('top-up adds the Cyprus provinces and districts', update(ref(a.db), topUp()));
+await expectDenied('second top-up', update(ref(b.db), topUp()));
+await expectDenied('top-up overwriting an original district', update(ref(b.db), { 'state/d/d5': { n: 'Ele geçirildi', p: 'p1' } }));
+await expectDenied('top-up of a sunk district', update(ref(b.db), { 'state/d/d990': { n: 'Batık', p: 'p82', x: true } }));
+await expectDenied('top-up of an original-range province', update(ref(b.db), { 'state/p/p50': { n: 'Sahte', c: 1 } }));
 
 console.log('cooldown');
 await expectOk('rename d5', action(a, 'd', 'd5', { n: 'Yeni Ad' }, 'ren'));
@@ -161,12 +177,41 @@ await expectOk('normal action in the revived province', action(r[9], 'd', `d${in
 await expectOk('sink again after revival', action(r[10], 'd', 'd10', { x: true }, 'del'));
 await expectDenied('unknown log action', action(r[11], 'd', 'd30', { n: 'Q' }, 'zzz'));
 
+console.log('countries, colours and Cyprus');
+const q = [];
+for (let k = 0; k < 12; k++) q.push(await fresh());
+const girne = idx('Girne');
+await expectOk('rename a Cyprus district', action(q[0], 'd', `d${girne}`, { n: 'Kyrenia' }, 'ren'));
+await expectOk('merge a Turkish district into a Cyprus one', action(q[1], 'd', `d${idx('Ayvalık')}`, { m: `d${girne}` }, 'mrg'));
+await expectOk('custom province colour', action(q[2], 'p', 'p6', { rgb: '#12ab9f', c: 3 }, 'pclr'));
+await expectDenied('colour not in #rrggbb form', action(q[3], 'p', 'p7', { rgb: 'red' }, 'pclr'));
+await expectDenied('upper-case colour', action(q[3], 'p', 'p7', { rgb: '#FF0000' }, 'pclr'));
+await expectOk('back to a palette colour', action(q[3], 'p', 'p6', { rgb: null, c: 1 }, 'pclr'));
+await expectOk('province to another country', action(q[4], 'p', 'p22', { k: 'BG' }, 'pcty'));
+await expectDenied('lower-case country code', action(q[5], 'p', 'p39', { k: 'bg' }, 'pcty'));
+await expectDenied('unknown custom country', action(q[5], 'p', 'p39', { k: '-NotACountry12345' }, 'pcty'));
+const trakya = push(ref(q[5].db, 'state/c')).key;
+await expectOk('province to a brand-new country', action(q[5], 'p', 'p39', { k: trakya }, 'pcty', { [`state/c/${trakya}`]: { n: 'Trakya Cumhuriyeti' } }));
+const stray = push(ref(q[6].db, 'state/c')).key;
+await expectDenied('a country nobody uses', action(q[6], 'p', 'p59', { n: 'Rodosto' }, 'pren', { [`state/c/${stray}`]: { n: 'Boş Ülke' } }));
+const np = push(ref(q[7].db, 'state/p')).key, nc = push(ref(q[7].db, 'state/c')).key;
+await expectOk('district to a new province in a new country', action(q[7], 'd', `d${idx('Bandırma')}`, { p: np }, 'dcty',
+  { [`state/p/${np}`]: { n: 'Yeni İl', c: 2, k: nc }, [`state/c/${nc}`]: { n: 'Yeni Ülke' } }));
+const np2 = push(ref(q[8].db, 'state/p')).key;
+await expectOk('district to a new province in a real country', action(q[8], 'd', `d${idx('Edremit')}`, { p: np2 }, 'dcty',
+  { [`state/p/${np2}`]: { n: 'Selanik', c: 1, k: 'GR' } }));
+await expectOk('district into a Cyprus province', action(q[9], 'd', `d${idx('Erdek')}`, { p: 'p82' }, 'prv'));
+await expectOk('sink a Cyprus district', action(q[10], 'd', `d${idx('Baf')}`, { x: true }, 'del'));
+await expectOk('raise it again', action(q[11], 'd', `d${idx('Baf')}`, { x: null, p: 'p83' }, 'rev'));
+
 console.log('anonymous access');
 const anon = initializeApp({ projectId: PROJECT, databaseURL: `http://${HOST}:${PORT}?ns=${PROJECT}` }, 'anon');
 const anonDb = getDatabase(anon);
 connectDatabaseEmulator(anonDb, HOST, PORT);
 await expectOk('public read of state', get(ref(anonDb, 'state/d/d5')));
 await expectOk('public read of the feature flags', get(ref(anonDb, 'caps')));
+await expectOk('public read of the v3 feature flag', get(ref(anonDb, 'caps3')));
+await expectOk('public read of custom countries', get(ref(anonDb, `state/c/${trakya}`)));
 await expectDenied('read someone else\'s cooldown', get(ref(b.db, `cool/${a.uid}`)));
 await expectDenied('write without auth', update(ref(anonDb), { 'state/d/d20': { n: 'Z', p: `p${map.d.prov[20]}`, t: TS } }));
 

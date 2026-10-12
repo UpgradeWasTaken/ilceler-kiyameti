@@ -10,7 +10,7 @@
 
       "d": {
         "$d": {
-          ".write": "auth != null && data.exists() && newData.exists() && newData.child('t').val() == now && newData.parent().parent().parent().child('cool/' + auth.uid + '/t').val() == now && newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'd' && newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() == $d && ((!data.child('x').exists() && !data.child('m').exists() && root.child('state/p/' + data.child('p').val() + '/x').val() != true) || ((data.child('x').val() == true || data.child('m').exists() || root.child('state/p/' + data.child('p').val() + '/x').val() == true) && !newData.child('x').exists() && !newData.child('m').exists() && newData.parent().parent().child('p/' + newData.child('p').val() + '/n').exists() && newData.parent().parent().child('p/' + newData.child('p').val() + '/x').val() != true))",
+          ".write": "(auth != null && data.exists() && newData.exists() && newData.child('t').val() == now && newData.parent().parent().parent().child('cool/' + auth.uid + '/t').val() == now && newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'd' && newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() == $d && ((!data.child('x').exists() && !data.child('m').exists() && root.child('state/p/' + data.child('p').val() + '/x').val() != true) || ((data.child('x').val() == true || data.child('m').exists() || root.child('state/p/' + data.child('p').val() + '/x').val() == true) && !newData.child('x').exists() && !newData.child('m').exists() && newData.parent().parent().child('p/' + newData.child('p').val() + '/n').exists() && newData.parent().parent().child('p/' + newData.child('p').val() + '/x').val() != true))) || (auth != null && !data.exists() && $d.matches(/^d(97[3-9]|9[89][0-9]|[1-9][0-9]{3})$/) && root.child('state/v').exists() && newData.exists() && !newData.child('x').exists() && !newData.child('m').exists() && !newData.child('t').exists())",
           ".validate": "$d.matches(/^d[0-9]{1,4}$/) && newData.hasChildren(['n', 'p'])",
           "n": { ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 30" },
           "p": { ".validate": "newData.isString() && newData.val().matches(/^(p[0-9]{1,2}|-[-0-9A-Za-z_]{10,30})$/) && newData.parent().parent().parent().child('p/' + newData.val() + '/n').exists() && newData.parent().parent().parent().child('p/' + newData.val() + '/x').val() != true" },
@@ -23,18 +23,30 @@
 
       "p": {
         "$p": {
-          ".write": "auth != null && newData.exists() && newData.parent().parent().parent().child('cool/' + auth.uid + '/t').val() == now && ((data.exists() && (data.child('x').val() != true || !newData.child('x').exists()) && newData.child('t').val() == now && newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'p' && newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() == $p) || (!data.exists() && $p.beginsWith('-') && newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'd' && newData.parent().parent().child('d/' + newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() + '/p').val() == $p))",
+          ".write": "(auth != null && newData.exists() && newData.parent().parent().parent().child('cool/' + auth.uid + '/t').val() == now && ((data.exists() && (data.child('x').val() != true || !newData.child('x').exists()) && newData.child('t').val() == now && newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'p' && newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() == $p) || (!data.exists() && $p.beginsWith('-') && newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'd' && newData.parent().parent().child('d/' + newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() + '/p').val() == $p))) || (auth != null && !data.exists() && $p.matches(/^p(8[2-9]|9[0-9])$/) && root.child('state/v').exists() && newData.exists() && !newData.child('x').exists() && !newData.child('t').exists())",
           ".validate": "$p.matches(/^(p[0-9]{1,2}|-[-0-9A-Za-z_]{10,30})$/) && newData.hasChildren(['n', 'c'])",
           "n": { ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 30" },
           "c": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 7" },
+          "rgb": { ".validate": "newData.isString() && newData.val().matches(/^#[0-9a-f]{6}$/)" },
+          "k": { ".validate": "newData.isString() && (newData.val().matches(/^[A-Z]{2,4}$/) || (newData.val().matches(/^-[-0-9A-Za-z_]{10,30}$/) && newData.parent().parent().parent().child('c/' + newData.val() + '/n').exists()))" },
           "x": { ".validate": "newData.val() == true" },
           "t": { ".validate": "newData.val() == now" },
+          "$other": { ".validate": false }
+        }
+      },
+
+      "c": {
+        "$c": {
+          ".write": "auth != null && !data.exists() && newData.exists() && $c.beginsWith('-') && newData.parent().parent().parent().child('cool/' + auth.uid + '/t').val() == now && ((newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'd' && newData.parent().parent().child('p/' + newData.parent().parent().child('d/' + newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() + '/p').val() + '/k').val() == $c) || (newData.parent().parent().parent().child('cool/' + auth.uid + '/k').val() == 'p' && newData.parent().parent().child('p/' + newData.parent().parent().parent().child('cool/' + auth.uid + '/i').val() + '/k').val() == $c))",
+          ".validate": "$c.matches(/^-[-0-9A-Za-z_]{10,30}$/) && newData.hasChildren(['n'])",
+          "n": { ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 30" },
           "$other": { ".validate": false }
         }
       }
     },
 
     "caps": { ".read": true },
+    "caps3": { ".read": true },
 
     "cool": {
       "$uid": {
@@ -55,7 +67,7 @@
         ".validate": "newData.hasChildren(['u', 't', 'a', 'i'])",
         "u": { ".validate": "newData.isString()" },
         "t": { ".validate": "newData.val() == now" },
-        "a": { ".validate": "newData.isString() && newData.val().matches(/^(del|mrg|ren|prv|pren|pdel|rev|prev)$/)" },
+        "a": { ".validate": "newData.isString() && newData.val().matches(/^(del|mrg|ren|prv|pren|pdel|rev|prev|dcty|pcty|pclr)$/)" },
         "i": { ".validate": "newData.isString()" },
         "s": { ".validate": "newData.isString() && newData.val().length <= 64" },
         "o": { ".validate": "newData.isString() && newData.val().length <= 64" },

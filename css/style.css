@@ -150,6 +150,26 @@ button { cursor: pointer; }
 .actions button.danger:hover:not(:disabled) { background: #b01f1f; }
 .actions button:disabled { opacity: .45; cursor: not-allowed; }
 .actions.one { grid-template-columns: 1fr; }
+.actions .wide { grid-column: 1 / -1; }
+.note { margin: 8px 0 0; }
+.act-form label.sub { margin-top: 10px; font-weight: 600; color: var(--muted); }
+.feed .dot, .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(0,0,0,.25); vertical-align: -1px; }
+
+/* colour picker */
+.swatches { display: grid; grid-template-columns: repeat(10, 1fr); gap: 6px; margin-bottom: 10px; }
+.swatches .sw { aspect-ratio: 1; padding: 0; border-radius: 7px; border: 1px solid rgba(0,0,0,.2); }
+.swatches .sw.on { outline: 3px solid var(--accent); outline-offset: 1px; }
+.rgb { display: grid; gap: 6px; }
+.rgb-top { display: flex; align-items: center; gap: 8px; }
+.color-preview { width: 42px; height: 30px; border-radius: 8px; border: 1px solid rgba(0,0,0,.25); flex: none; }
+.rgb .hex { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.rgb .native { width: 42px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; cursor: pointer; }
+.rgb-row { display: grid !important; grid-template-columns: 16px 1fr 32px; align-items: center; gap: 8px; margin: 0 !important; font-weight: 700; }
+.rgb-row output { font-variant-numeric: tabular-nums; text-align: right; font-weight: 500; color: var(--muted); }
+.rgb-row input[type="range"] { width: 100%; }
+.rgb-row.c0 input { accent-color: #d32f2f; }
+.rgb-row.c1 input { accent-color: #2e7d32; }
+.rgb-row.c2 input { accent-color: #1565c0; }
 .actions button.revive, .act-form button.revive { color: #fff; background: #1b8a4b; border-color: #1b8a4b; }
 .actions button.revive:hover:not(:disabled) { background: #157a40; }
 .swatch.sea { background: var(--sea); border-style: dashed; border-color: #0b5fd6; }

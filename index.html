@@ -15,6 +15,7 @@
   <link rel="modulepreload" href="js/state.js">
   <link rel="modulepreload" href="js/view.js">
   <link rel="modulepreload" href="js/backend.js">
+  <link rel="modulepreload" href="js/countries.js">
   <link rel="stylesheet" href="css/style.css">
   <script type="module" src="js/app.js"></script>
 </head>
@@ -78,14 +79,18 @@
           <div class="actions" id="d-actions">
             <button type="button" data-act="rename">✏️ Adını değiştir</button>
             <button type="button" data-act="province">🏳️ İlini değiştir</button>
+            <button type="button" data-act="country" data-v3>🌍 Ülkesini değiştir</button>
             <button type="button" data-act="merge">🔗 Başka ilçeye kat</button>
-            <button type="button" data-act="delete" class="danger">🌊 Denize göm</button>
+            <button type="button" data-act="delete" class="danger wide">🌊 Denize göm</button>
           </div>
+          <p id="sel-note" class="muted note" hidden></p>
 
           <div class="prov-box">
             <h3><span id="prov-swatch" class="swatch sm"></span><span id="prov-name"></span><small id="prov-count"></small></h3>
             <div class="actions">
               <button type="button" data-act="prename">✏️ İlin adını değiştir</button>
+              <button type="button" data-act="pcolor" data-v3>🎨 Rengini değiştir</button>
+              <button type="button" data-act="pcountry" data-v3>🌍 İlin ülkesini değiştir</button>
               <button type="button" data-act="pdelete" class="danger">🌊 Tüm ili denize göm</button>
             </div>
           </div>
